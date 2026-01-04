@@ -3,9 +3,10 @@ import json
 import datetime
 import plotly.utils
 import numpy as np
+import os
 
 # --- CONFIGURATION ---
-CSV_FILE = "israel_doctors.csv" # Make sure this matches your filename
+CSV_FILE = "israel_doctors.csv" # Ensure this matches your filename
 ISRAEL_POPULATION = 10_170_000
 RETIREMENT_AGE_EXPERIENCE = 45
 CURRENT_YEAR = datetime.datetime.now().year
@@ -29,14 +30,17 @@ AAMC_USA_BENCHMARKS = {
 }
 
 def load_and_clean_data():
+    if not os.path.exists(CSV_FILE):
+        print(f"❌ Error: {CSV_FILE} not found. Please run the scraper first.")
+        return None
+
     try:
         df = pd.read_csv(CSV_FILE)
-    except FileNotFoundError:
-        print(f"❌ Error: {CSV_FILE} not found.")
+    except Exception as e:
+        print(f"❌ Error reading CSV: {e}")
         return None
 
     # --- 1. NORMALIZE SPECIALTY NAMES ---
-    # Define Column Names from the new CSV format
     col_s1_name = 'Specialty 1 Name'
     col_s2_name = 'Specialty 2 Name'
     
@@ -61,9 +65,9 @@ def load_and_clean_data():
     df[col_s1_name] = df[col_s1_name].replace(normalization_map)
     df[col_s2_name] = df[col_s2_name].replace(normalization_map)
 
-    # --- 2. PARSE DATES (The Logic Change) ---
+    # --- 2. PARSE DATES ---
     
-    # A. General Registration Date (Column B) -> Used for Retirement/Age
+    # A. General Registration Date (Column B) -> Used for "Active Doctor" filtering & Experience Grouping
     df['gen_date'] = pd.to_datetime(df['Registration Date'], format='%d/%m/%Y', errors='coerce')
     
     # B. Specialty 1 Date (Column D)
@@ -72,13 +76,12 @@ def load_and_clean_data():
     # C. Specialty 2 Date (Column F)
     df['s2_date'] = pd.to_datetime(df['Specialty 2 Date'], format='%d/%m/%Y', errors='coerce')
 
-    # Drop rows where we don't even know the general registration date (corrupt data)
+    # Drop rows without a valid general registration date
     df = df.dropna(subset=['gen_date'])
 
-    # --- 3. CALCULATE GENERAL EXPERIENCE (For Retirement) ---
+    # --- 3. CALCULATE GENERAL EXPERIENCE ---
     df['gen_year'] = df['gen_date'].dt.year
     df['gen_experience'] = CURRENT_YEAR - df['gen_year']
-    df['retirement_year'] = df['gen_year'] + RETIREMENT_AGE_EXPERIENCE
     
     return df
 
@@ -90,6 +93,7 @@ def generate_static_site():
     col_s2_name = 'Specialty 2 Name'
 
     # Filter Active Doctors based on GENERAL EXPERIENCE (Column B)
+    # This keeps the dashboard focused on doctors who are actually working age
     active_df = df[df['gen_experience'] <= RETIREMENT_AGE_EXPERIENCE].copy()
     
     s1 = df[col_s1_name].dropna().astype(str).unique().tolist()
@@ -104,12 +108,9 @@ def generate_static_site():
     
     for spec in unique_specialties:
         # --- 1. FILTERING FOR THIS SPECIALTY ---
-        # Get all doctors with this specialty (History)
         mask_s1_all = df[col_s1_name] == spec
         mask_s2_all = df[col_s2_name] == spec
-        spec_df_all = df[mask_s1_all | mask_s2_all].copy()
         
-        # Get active doctors with this specialty (Snapshot)
         mask_s1_active = active_df[col_s1_name] == spec
         mask_s2_active = active_df[col_s2_name] == spec
         spec_df_active = active_df[mask_s1_active | mask_s2_active].copy()
@@ -117,22 +118,21 @@ def generate_static_site():
         total_active = len(spec_df_active)
         if total_active < 30: continue 
 
-        # --- 2. SPECIALTY JOIN DATES (The Fix) ---
-        # We need to construct a list of years ONLY from the relevant specialty column
-        # If doctor has Spec A in Col C, take date from Col D.
-        # If doctor has Spec A in Col E, take date from Col F.
-        
+        # --- 2. CONSTRUCT SPECIALTY-SPECIFIC TIMELINES ---
+        # Get the specific date when each doctor acquired THIS specialty
         dates_from_s1 = df.loc[mask_s1_all, 's1_date']
         dates_from_s2 = df.loc[mask_s2_all, 's2_date']
-        
-        # Combine them into one series of dates specific to THIS specialty
         all_spec_dates = pd.concat([dates_from_s1, dates_from_s2])
-        spec_years = all_spec_dates.dt.year
+        
+        # Determine the "Specialty Start Year" for everyone
+        spec_start_years = all_spec_dates.dt.year
+        
+        # Determine "Specialty Retirement Year" (Specialty Start + 45)
+        # We use this for the Net Pipeline Outflow calculation
+        spec_retirement_years = spec_start_years + RETIREMENT_AGE_EXPERIENCE
 
-        # --- 3. REPLACEMENT RATIO ---
-        # We use general experience (Col B) for determining "Junior" vs "Veteran" status
-        # because a "Junior" specialist might be a "Senior" doctor overall, but usually
-        # for workforce planning, we care about age/career stage.
+        # --- 3. REPLACEMENT RATIO (KPI) ---
+        # Based on General Experience (Col B) to reflect biological age/seniority
         juniors_count = len(spec_df_active[spec_df_active['gen_experience'] <= 10])
         veterans_count = len(spec_df_active[spec_df_active['gen_experience'] >= 30])
         
@@ -147,6 +147,8 @@ def generate_static_site():
 
         # --- 4. HEADLINE STATS ---
         velocity = (juniors_count / total_active) * 100
+        
+        # Net Now (KPI)
         outflow_now = len(spec_df_active[spec_df_active['gen_experience'] >= (RETIREMENT_AGE_EXPERIENCE - 10)])
         net_now = juniors_count - outflow_now
         
@@ -172,16 +174,19 @@ def generate_static_site():
             'color': usa_color
         })
 
-        # --- 5. FORECAST LOGIC (Using Specialty Dates for Inflow) ---
-        joins_per_year = spec_years.value_counts().sort_index()
+        # --- 5. CHARTS LOGIC ---
+        
+        # CHART 1: New Licenses (Inflow)
+        joins_per_year = spec_start_years.value_counts().sort_index()
         years_idx = list(range(1980, CURRENT_YEAR + 1))
         joins_counts = [int(joins_per_year.get(y, 0)) for y in years_idx]
 
-        # Projected Inflow (Avg of last 5 years of SPECIALTY joins)
+        # Calculate Projected Inflow for Forecast (Avg of last 5 years)
         recent_years = range(CURRENT_YEAR - 5, CURRENT_YEAR)
         recent_inflow_sum = sum([joins_per_year.get(y, 0) for y in recent_years])
         avg_inflow = max(1, int(recent_inflow_sum / 5))
 
+        # CHART 2: Net Pipeline (Inflow - Outflow)
         history_years = list(range(1980, CURRENT_YEAR + 1))
         future_years = list(range(CURRENT_YEAR + 1, 2036))
         
@@ -190,36 +195,37 @@ def generate_static_site():
 
         # HISTORY (1980-Current)
         for y in history_years:
-            # Inflow: Use Specialty Specific Join Date
-            inflow_y = len(all_spec_dates[(all_spec_dates.dt.year > (y - 10)) & (all_spec_dates.dt.year <= y)])
+            # Inflow: Count doctors who got THIS specialty in the last 10 years
+            inflow_y = len(spec_start_years[(spec_start_years > (y - 10)) & (spec_start_years <= y)])
             
-            # Outflow: Use General Retirement Date (Column B based)
-            outflow_y = len(spec_df_all[(spec_df_all['retirement_year'] >= y) & (spec_df_all['retirement_year'] < (y + 10))])
+            # Outflow: Count doctors who reach "Specialty Retirement Age" in next 10 years
+            # (Using specialty_date + 45)
+            outflow_y = len(spec_retirement_years[(spec_retirement_years >= y) & (spec_retirement_years < (y + 10))])
+            
             net_trend_history.append(inflow_y - outflow_y)
 
-        # FORECAST
+        # FORECAST (Future)
         for y in future_years:
+            # Forecast Inflow
             real_part_years = range(y - 10, CURRENT_YEAR + 1)
             projected_part_years = range(max(y - 10, CURRENT_YEAR + 1), y + 1)
             
-            # Count real joins in the 10-year window
-            count_real = len(all_spec_dates[all_spec_dates.dt.year.isin(real_part_years)])
+            count_real = len(spec_start_years[spec_start_years.isin(real_part_years)])
             count_proj = len(projected_part_years) * avg_inflow
-            
             inflow_forecast = count_real + count_proj
             
-            # Outflow is always based on General Age
-            outflow_forecast = len(spec_df_all[(spec_df_all['retirement_year'] >= y) & (spec_df_all['retirement_year'] < (y + 10))])
+            # Forecast Outflow (Based on Specialty Date)
+            outflow_forecast = len(spec_retirement_years[(spec_retirement_years >= y) & (spec_retirement_years < (y + 10))])
             
             net_trend_forecast.append(inflow_forecast - outflow_forecast)
 
-        # EXPERIENCE STRUCTURE (General Experience)
+        # CHART 3: Experience Structure (Keep General Experience for this)
         bins = [0, 10, 20, 30, 40]
         labels = ['Juniors (0-10)', 'Mid (10-20)', 'Senior (20-30)', 'Vet (30+)']
         exp_groups = pd.cut(spec_df_active['gen_experience'], bins=bins, labels=labels, right=False)
         exp_counts = exp_groups.value_counts().sort_index().tolist()
         
-        # DENSITY
+        # CHART 4: Density
         density_x = [density]
         density_y = ['Israel']
         density_colors = ['#3498db']
@@ -274,5 +280,187 @@ def generate_static_site():
         .kpi-card {{ background: #fff; padding: 15px 25px; border-radius: 8px; border: 1px solid #eee; text-align: center; min-width: 200px; box-shadow: 0 2px 5px rgba(0,0,0,0.03); }}
         .kpi-val {{ font-size: 24px; font-weight: bold; color: #2c3e50; display: block; }}
         .kpi-label {{ font-size: 14px; color: #95a5a6; text-transform: uppercase; letter-spacing: 1px; }}
-        .charts-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(350
+        .charts-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; }}
+        .chart-box {{ background: white; padding: 10px; border-radius: 8px; border: 1px solid #eee; min-height: 350px; }}
+        .chart-full {{ grid-column: 1 / -1; }}
+        .explanation {{ background: #fef9e7; padding: 15px; margin-top: 20px; border-left: 5px solid #f1c40f; font-size: 0.9em; color: #7f8c8d; }}
+    </style>
+</head>
+<body>
 
+<div class="container">
+    <h1>🇮🇱 Israel Medical Workforce Analysis</h1>
+    <div class="subtitle">Active Doctors (Under 43 years experience) | Data Source: MoH</div>
+
+    <div class="section-title">🗺️ Global Market Velocity Map</div>
+    <div id="chart-velocity" class="chart-box" style="height: 500px;"></div>
+
+    <div class="section-title">🔬 Specialty Deep Dive</div>
+    <div class="controls">
+        <label for="specSelect"><strong>Select Specialty: </strong></label>
+        <select id="specSelect" onchange="updateDashboard()"></select>
+    </div>
+
+    <div class="kpi-row">
+        <div class="kpi-card">
+            <span class="kpi-val" id="kpi-total">-</span>
+            <span class="kpi-label">Active Doctors</span>
+        </div>
+        <div class="kpi-card">
+            <span class="kpi-val" id="kpi-ratio">-</span>
+            <span class="kpi-label">Junior/Vet Ratio</span>
+        </div>
+        <div class="kpi-card">
+            <span class="kpi-val" id="kpi-usa">-</span>
+            <span class="kpi-label">USA Benchmark Gap</span>
+        </div>
+    </div>
+
+    <div class="charts-grid">
+        <div id="chart-joins" class="chart-box chart-full"></div>
+        <div id="chart-trend" class="chart-box chart-full"></div>
+        <div id="chart-exp" class="chart-box"></div>
+        <div id="chart-dens" class="chart-box"></div>
+    </div>
+
+    <div class="explanation">
+        <strong>🔮 How is the "Projected Forecast" (Dotted Line) calculated?</strong><br>
+        1. <strong>Future Outflow:</strong> We know exactly when current doctors will retire, so we count them.<br>
+        2. <strong>Future Inflow:</strong> We assume the number of new licenses remains similar to the average of the last 5 years.<br>
+        This reveals if the current training pipeline is sufficient to handle the upcoming "Retirement Wave".
+    </div>
+</div>
+
+<script>
+    const data = {json_dashboard};
+    const globalData = {json_global};
+    const specialties = Object.keys(data).sort();
+
+    const mapTrace = {{
+        x: globalData.map(d => d.x),
+        y: globalData.map(d => d.y),
+        text: globalData.map(d => d.name),
+        mode: 'markers',
+        marker: {{
+            size: globalData.map(d => Math.sqrt(d.x) * 1.5),
+            color: globalData.map(d => d.y),
+            colorscale: 'Viridis',
+            showscale: true,
+            opacity: 0.8
+        }}
+    }};
+    
+    Plotly.newPlot('chart-velocity', [mapTrace], {{
+        title: 'Size (Total Doctors) vs Growth Velocity (% Juniors)',
+        xaxis: {{ title: 'Total Doctors (Size)' }},
+        yaxis: {{ title: 'Velocity (Junior %) - Higher is Faster Growth' }},
+        hovermode: 'closest'
+    }}, {{responsive: true}});
+
+    const select = document.getElementById('specSelect');
+    specialties.forEach(spec => {{
+        const opt = document.createElement('option');
+        opt.value = spec;
+        opt.innerHTML = spec;
+        select.appendChild(opt);
+    }});
+
+    function updateDashboard() {{
+        const spec = select.value;
+        const d = data[spec];
+        
+        document.getElementById('kpi-total').innerText = d.total;
+        
+        const ratioElem = document.getElementById('kpi-ratio');
+        ratioElem.innerText = d.ratio_val;
+        ratioElem.style.color = d.ratio_color;
+        
+        const usaElem = document.getElementById('kpi-usa');
+        usaElem.innerText = d.usa_text;
+        usaElem.style.color = d.usa_color;
+
+        Plotly.newPlot('chart-joins', [{{
+            x: d.charts.years_x,
+            y: d.charts.years_y,
+            type: 'bar',
+            marker: {{ color: '#3498db' }}
+        }}], {{
+            title: 'New Licenses Issued Per Year (1980-{CURRENT_YEAR})',
+            margin: {{ t: 40, b: 40, l: 40, r: 20 }},
+            xaxis: {{ title: 'Year' }}
+        }}, {{responsive: true}});
+
+        // TREND + FORECAST CHART
+        const traceHist = {{
+            x: d.charts.hist_x,
+            y: d.charts.hist_y,
+            name: 'Historical Data',
+            type: 'scatter',
+            mode: 'lines',
+            line: {{ width: 3, color: '#2c3e50' }}
+        }};
+        
+        const traceFut = {{
+            x: [d.charts.hist_x[d.charts.hist_x.length-1], ...d.charts.fut_x], // Connect lines
+            y: [d.charts.hist_y[d.charts.hist_y.length-1], ...d.charts.fut_y],
+            name: 'Projected Forecast',
+            type: 'scatter',
+            mode: 'lines',
+            line: {{ width: 3, color: '#e74c3c', dash: 'dot' }}
+        }};
+
+        Plotly.newPlot('chart-trend', [traceHist, traceFut], {{
+            title: 'Net Pipeline Health & Forecast (1980-2035)',
+            margin: {{ t: 40, b: 40, l: 40, r: 20 }},
+            shapes: [{{ type: 'line', x0: 1980, x1: 2035, y0: 0, y1: 0, line: {{ color: 'gray', width: 1, dash: 'dot' }} }}],
+            xaxis: {{ title: 'Year', range: [1980, 2035] }},
+            yaxis: {{ title: 'Net Balance (In - Out)' }}
+        }}, {{responsive: true}});
+
+        Plotly.newPlot('chart-exp', [{{
+            x: d.charts.exp_x,
+            y: d.charts.exp_y,
+            type: 'bar',
+            marker: {{ color: ['#2ecc71', '#3498db', '#3498db', '#e74c3c'] }}
+        }}], {{
+            title: 'Experience Structure (Active Doctors)',
+            margin: {{ t: 40, b: 40, l: 40, r: 20 }}
+        }}, {{responsive: true}});
+
+        const densityTrace = {{
+            x: d.charts.dens_x,
+            y: d.charts.dens_y,
+            type: 'bar',
+            orientation: 'h',
+            marker: {{ color: d.charts.dens_c }},
+            text: d.charts.dens_x.map(v => v.toFixed(3)),
+            textposition: 'auto'
+        }};
+        const densLayout = {{
+            title: 'Density (per 1,000)',
+            margin: {{ t: 40, b: 40, l: 80, r: 20 }},
+            xaxis: {{ zeroline: false }}
+        }};
+        if(d.charts.usa_bench) {{
+            densLayout.shapes = [{{ type: 'line', x0: d.charts.usa_bench, x1: d.charts.usa_bench, y0: -0.5, y1: 1.5, line: {{ color: 'red', width: 2, dash: 'dot' }} }}];
+        }}
+        Plotly.newPlot('chart-dens', [densityTrace], densLayout, {{responsive: true}});
+    }}
+
+    // Trigger update for first specialty
+    if (specialties.length > 0) {{
+       updateDashboard();
+    }}
+</script>
+
+</body>
+</html>
+    """
+
+    with open("index.html", "w", encoding="utf-8") as f:
+        f.write(html_content)
+    
+    print("✅ Success! Forecast & Replacement Ratios added.")
+
+if __name__ == "__main__":
+    generate_static_site()
