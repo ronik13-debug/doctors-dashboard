@@ -5,7 +5,7 @@ import plotly.utils
 import numpy as np
 
 # --- CONFIGURATION ---
-CSV_FILE = "israel_doctors_full.csv" # Make sure this matches your filename
+CSV_FILE = "israel_doctors.csv" # Make sure this matches your filename
 ISRAEL_POPULATION = 10_170_000
 RETIREMENT_AGE_EXPERIENCE = 45
 CURRENT_YEAR = datetime.datetime.now().year
@@ -275,3 +275,4 @@ def generate_static_site():
         .kpi-val {{ font-size: 24px; font-weight: bold; color: #2c3e50; display: block; }}
         .kpi-label {{ font-size: 14px; color: #95a5a6; text-transform: uppercase; letter-spacing: 1px; }}
         .charts-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(350
+
