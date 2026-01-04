@@ -67,39 +67,48 @@ def load_and_clean_data():
     return df
 
 def generate_static_site():
+    # 1. LOAD FULL DATA (Includes retired/old doctors)
     df = load_and_clean_data()
     if df is None: return
 
-    # Filter Active Doctors
+    # 2. CREATE ACTIVE DATA (For Current Status / Density)
     active_df = df[df['experience'] <= RETIREMENT_AGE_EXPERIENCE].copy()
     
-    # Get Unique Specialties
-    s1 = active_df['specialty_1'].dropna().astype(str).unique().tolist()
-    s2 = active_df['specialty_2'].dropna().astype(str).unique().tolist()
+    # Get Unique Specialties from FULL list to be safe
+    s1 = df['specialty_1'].dropna().astype(str).unique().tolist()
+    s2 = df['specialty_2'].dropna().astype(str).unique().tolist()
     unique_specialties = sorted(list(set(s1 + s2)))
     unique_specialties = [s for s in unique_specialties if s.lower() not in ['nan', 'none', '']]
 
     # --- DATA CONTAINERS ---
     dashboard_data = {}
-    global_velocity_data = [] # For the Market Map
+    global_velocity_data = [] 
 
     print("⏳ Processing specialties...")
     
     for spec in unique_specialties:
-        # LOGIC: Spec 1 OR Spec 2
-        mask = (active_df['specialty_1'] == spec) | (active_df['specialty_2'] == spec)
-        spec_df = active_df[mask]
-        total = len(spec_df)
+        # --- SUBSET 1: ACTIVE DOCTORS (For Snapshot, Density, Experience) ---
+        mask_active = (active_df['specialty_1'] == spec) | (active_df['specialty_2'] == spec)
+        spec_df_active = active_df[mask_active]
+        total_active = len(spec_df_active)
         
-        if total < 30: continue 
+        # --- SUBSET 2: ALL HISTORY (For Trends & Joins) ---
+        mask_all = (df['specialty_1'] == spec) | (df['specialty_2'] == spec)
+        spec_df_all = df[mask_all]
 
-        # 1. HEADLINE STATS
-        inflow_now = len(spec_df[spec_df['experience'] <= 10])
-        outflow_now = len(spec_df[spec_df['experience'] >= (RETIREMENT_AGE_EXPERIENCE - 10)])
-        net_now = inflow_now - outflow_now
-        velocity = (inflow_now / total) * 100
+        if total_active < 30: continue 
+
+        # 1. HEADLINE STATS (Based on ACTIVE)
+        inflow_now = len(spec_df_active[spec_df_active['experience'] <= 10])
+        # Note: Velocity is based on active workforce
+        velocity = (inflow_now / total_active) * 100
         
-        density = (total / ISRAEL_POPULATION) * 1000
+        # Current Net Trend (Active view)
+        outflow_now = len(spec_df_active[spec_df_active['experience'] >= (RETIREMENT_AGE_EXPERIENCE - 10)])
+        net_now = inflow_now - outflow_now
+        
+        # Density (Active view)
+        density = (total_active / ISRAEL_POPULATION) * 1000
         usa_bench = AAMC_USA_BENCHMARKS.get(spec, None)
         
         usa_text = "No Benchmark"
@@ -115,33 +124,39 @@ def generate_static_site():
                 usa_text = f"Surplus: +{gap_docs}"
                 usa_color = "#2ecc71" # Green
 
-        # --- SAVE GLOBAL STATS FOR VELOCITY MAP ---
+        # --- SAVE GLOBAL STATS ---
         global_velocity_data.append({
-            'x': total,
+            'x': total_active,
             'y': velocity,
             'name': spec,
             'color': usa_color
         })
 
-        # 2. NEW: YEARLY JOINS (BAR GRAPH)
-        # Count how many doctors joined in each year from 1980 to 2024
-        joins_per_year = spec_df['reg_year'].value_counts().sort_index()
+        # 2. YEARLY JOINS (Based on ALL HISTORY)
+        # We want to see how many joined in 1980 even if they are retired now
+        joins_per_year = spec_df_all['reg_year'].value_counts().sort_index()
         years_idx = list(range(1980, datetime.datetime.now().year + 1))
         joins_counts = [int(joins_per_year.get(y, 0)) for y in years_idx]
 
-        # 3. EXPERIENCE STRUCTURE
+        # 3. EXPERIENCE STRUCTURE (Based on ACTIVE)
         bins = [0, 10, 20, 30, 40]
         labels = ['Juniors (0-10)', 'Mid (10-20)', 'Senior (20-30)', 'Vet (30+)']
-        exp_groups = pd.cut(spec_df['experience'], bins=bins, labels=labels, right=False)
+        exp_groups = pd.cut(spec_df_active['experience'], bins=bins, labels=labels, right=False)
         exp_counts = exp_groups.value_counts().sort_index().tolist()
         
-        # 4. TRAILING NET CHANGE (1980-2030)
+        # 4. TRAILING NET CHANGE (Based on ALL HISTORY)
+        # We check the full dataset to find who joined/retired in the past
         years_range = list(range(1980, 2031))
         net_trend_y = []
         
         for y in years_range:
-            inflow_y = len(spec_df[(spec_df['reg_year'] > (y - 10)) & (spec_df['reg_year'] <= y)])
-            outflow_y = len(spec_df[(spec_df['retirement_year'] >= y) & (spec_df['retirement_year'] < (y + 10))])
+            # Inflow: Registered between y-10 and y (From ALL history)
+            inflow_y = len(spec_df_all[(spec_df_all['reg_year'] > (y - 10)) & (spec_df_all['reg_year'] <= y)])
+            
+            # Outflow: Retired between y and y+10 (From ALL history)
+            # This captures doctors who retired in 1990 even if they aren't in active_df
+            outflow_y = len(spec_df_all[(spec_df_all['retirement_year'] >= y) & (spec_df_all['retirement_year'] < (y + 10))])
+            
             net_trend_y.append(inflow_y - outflow_y)
 
         # 5. DENSITY COMPARISON
@@ -156,13 +171,13 @@ def generate_static_site():
 
         # STORE DATA
         dashboard_data[spec] = {
-            "total": int(total),
+            "total": int(total_active),
             "net_now": int(net_now),
             "usa_text": usa_text,
             "usa_color": usa_color,
             "charts": {
-                "years_x": years_idx, # New
-                "years_y": joins_counts, # New
+                "years_x": years_idx, 
+                "years_y": joins_counts,
                 "exp_x": labels,
                 "exp_y": exp_counts,
                 "trend_x": years_range,
@@ -229,7 +244,7 @@ def generate_static_site():
     <div class="kpi-row">
         <div class="kpi-card">
             <span class="kpi-val" id="kpi-total">-</span>
-            <span class="kpi-label">Total Doctors</span>
+            <span class="kpi-label">Active Doctors</span>
         </div>
         <div class="kpi-card">
             <span class="kpi-val" id="kpi-net">-</span>
@@ -251,7 +266,8 @@ def generate_static_site():
 
     <div class="explanation">
         <strong>📉 How is "Net Change" calculated?</strong><br>
-        (Rolling 10y Inflow) MINUS (Rolling 10y Outflow). It shows if a specialty is replacing its retirees fast enough.
+        (Rolling 10y Inflow) MINUS (Rolling 10y Outflow). It shows if a specialty is replacing its retirees fast enough.<br>
+        <em>Note: This graph uses all available historical data, including doctors who have since retired.</em>
     </div>
 </div>
 
@@ -344,7 +360,7 @@ def generate_static_site():
             type: 'bar',
             marker: {{ color: ['#2ecc71', '#3498db', '#3498db', '#e74c3c'] }}
         }}], {{
-            title: 'Experience Structure',
+            title: 'Experience Structure (Active Doctors)',
             margin: {{ t: 40, b: 40, l: 40, r: 20 }}
         }}, {{responsive: true}});
 
@@ -379,7 +395,7 @@ def generate_static_site():
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html_content)
     
-    print("✅ Success! Added Global Map and Yearly Joins chart.")
+    print("✅ Success! 'Active' vs 'All History' logic applied.")
 
 if __name__ == "__main__":
     generate_static_site()
