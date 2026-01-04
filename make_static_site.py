@@ -5,9 +5,9 @@ import plotly.utils
 import numpy as np
 
 # --- CONFIGURATION ---
-CSV_FILE = "israel_doctors_safe.csv"
+CSV_FILE = "israel_doctors.csv"
 ISRAEL_POPULATION = 10_170_000
-RETIREMENT_AGE_EXPERIENCE = 43
+RETIREMENT_AGE_EXPERIENCE = 45
 CURRENT_YEAR = datetime.datetime.now().year
 
 # --- USA BENCHMARKS (AAMC 2023) ---
@@ -423,3 +423,4 @@ def generate_static_site():
 
 if __name__ == "__main__":
     generate_static_site()
+
