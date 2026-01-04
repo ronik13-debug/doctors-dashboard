@@ -2,6 +2,7 @@ import pandas as pd
 import json
 import datetime
 import plotly.utils
+import numpy as np
 
 # --- CONFIGURATION ---
 CSV_FILE = "israel_doctors_safe.csv"
@@ -78,9 +79,10 @@ def generate_static_site():
     unique_specialties = sorted(list(set(s1 + s2)))
     unique_specialties = [s for s in unique_specialties if s.lower() not in ['nan', 'none', '']]
 
-    # --- PRE-CALCULATE ALL DATA ---
+    # --- DATA CONTAINERS ---
     dashboard_data = {}
-    
+    global_velocity_data = [] # For the Market Map
+
     print("⏳ Processing specialties...")
     
     for spec in unique_specialties:
@@ -89,12 +91,13 @@ def generate_static_site():
         spec_df = active_df[mask]
         total = len(spec_df)
         
-        if total < 30: continue # Skip small specialties
+        if total < 30: continue 
 
-        # 1. HEADLINE STATS (Current Snapshot)
+        # 1. HEADLINE STATS
         inflow_now = len(spec_df[spec_df['experience'] <= 10])
         outflow_now = len(spec_df[spec_df['experience'] >= (RETIREMENT_AGE_EXPERIENCE - 10)])
         net_now = inflow_now - outflow_now
+        velocity = (inflow_now / total) * 100
         
         density = (total / ISRAEL_POPULATION) * 1000
         usa_bench = AAMC_USA_BENCHMARKS.get(spec, None)
@@ -106,34 +109,42 @@ def generate_static_site():
             gap = density - usa_bench
             gap_docs = int(gap * (ISRAEL_POPULATION / 1000))
             if gap < 0:
-                usa_text = f"Deficit: {gap_docs} docs"
+                usa_text = f"Deficit: {gap_docs}"
                 usa_color = "#e74c3c" # Red
             else:
-                usa_text = f"Surplus: +{gap_docs} docs"
+                usa_text = f"Surplus: +{gap_docs}"
                 usa_color = "#2ecc71" # Green
 
-        # 2. EXPERIENCE STRUCTURE (Histogram)
+        # --- SAVE GLOBAL STATS FOR VELOCITY MAP ---
+        global_velocity_data.append({
+            'x': total,
+            'y': velocity,
+            'name': spec,
+            'color': usa_color
+        })
+
+        # 2. NEW: YEARLY JOINS (BAR GRAPH)
+        # Count how many doctors joined in each year from 1980 to 2024
+        joins_per_year = spec_df['reg_year'].value_counts().sort_index()
+        years_idx = list(range(1980, datetime.datetime.now().year + 1))
+        joins_counts = [int(joins_per_year.get(y, 0)) for y in years_idx]
+
+        # 3. EXPERIENCE STRUCTURE
         bins = [0, 10, 20, 30, 40]
         labels = ['Juniors (0-10)', 'Mid (10-20)', 'Senior (20-30)', 'Vet (30+)']
         exp_groups = pd.cut(spec_df['experience'], bins=bins, labels=labels, right=False)
         exp_counts = exp_groups.value_counts().sort_index().tolist()
         
-        # 3. TRAILING NET CHANGE (Time Series Analysis)
-        # We calculate the window for years 2015 to 2030
-        years_range = list(range(2015, 2031))
+        # 4. TRAILING NET CHANGE (1980-2030)
+        years_range = list(range(1980, 2031))
         net_trend_y = []
         
         for y in years_range:
-            # Inflow: Registered between (Y-10) and Y
             inflow_y = len(spec_df[(spec_df['reg_year'] > (y - 10)) & (spec_df['reg_year'] <= y)])
-            
-            # Outflow: Retiring between Y and (Y+10)
-            # Retiring year is reg_year + 43
             outflow_y = len(spec_df[(spec_df['retirement_year'] >= y) & (spec_df['retirement_year'] < (y + 10))])
-            
             net_trend_y.append(inflow_y - outflow_y)
 
-        # 4. DENSITY COMPARISON
+        # 5. DENSITY COMPARISON
         density_x = [density]
         density_y = ['Israel']
         density_colors = ['#3498db']
@@ -150,6 +161,8 @@ def generate_static_site():
             "usa_text": usa_text,
             "usa_color": usa_color,
             "charts": {
+                "years_x": years_idx, # New
+                "years_y": joins_counts, # New
                 "exp_x": labels,
                 "exp_y": exp_counts,
                 "trend_x": years_range,
@@ -157,12 +170,13 @@ def generate_static_site():
                 "dens_x": density_x,
                 "dens_y": density_y,
                 "dens_c": density_colors,
-                "usa_bench": usa_bench  # For drawing the line
+                "usa_bench": usa_bench 
             }
         }
 
     # SERIALIZE TO JSON
-    json_data = json.dumps(dashboard_data, default=lambda x: int(x) if isinstance(x, (np.int64, np.int32)) else x)
+    json_dashboard = json.dumps(dashboard_data, default=lambda x: int(x) if isinstance(x, (np.int64, np.int32)) else x)
+    json_global = json.dumps(global_velocity_data, default=lambda x: int(x) if isinstance(x, (np.int64, np.int32)) else x)
 
     # --- HTML TEMPLATE ---
     html_content = f"""
@@ -180,6 +194,8 @@ def generate_static_site():
         h1 {{ text-align: center; color: #2c3e50; margin-bottom: 5px; }}
         .subtitle {{ text-align: center; color: #7f8c8d; margin-bottom: 30px; font-size: 0.9em; }}
         
+        .section-title {{ font-size: 1.2em; font-weight: bold; color: #34495e; margin: 30px 0 15px 0; border-bottom: 2px solid #ecf0f1; padding-bottom: 10px; }}
+        
         .controls {{ text-align: center; margin-bottom: 30px; padding: 20px; background: #ecf0f1; border-radius: 8px; }}
         select {{ padding: 10px 20px; font-size: 16px; border-radius: 5px; border: 1px solid #bdc3c7; min-width: 300px; }}
         
@@ -190,14 +206,21 @@ def generate_static_site():
         
         .charts-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; }}
         .chart-box {{ background: white; padding: 10px; border-radius: 8px; border: 1px solid #eee; min-height: 350px; }}
+        .chart-full {{ grid-column: 1 / -1; }}
+        
+        .explanation {{ background: #fef9e7; padding: 15px; margin-top: 20px; border-left: 5px solid #f1c40f; font-size: 0.9em; color: #7f8c8d; }}
     </style>
 </head>
 <body>
 
 <div class="container">
     <h1>🇮🇱 Israel Medical Workforce Analysis</h1>
-    <div class="subtitle">Data source: Ministry of Health Registry (Active Doctors &lt; 43y experience)</div>
+    <div class="subtitle">Active Doctors (Under 43 years experience) | Data Source: MoH</div>
 
+    <div class="section-title">🗺️ Global Market Velocity Map</div>
+    <div id="chart-velocity" class="chart-box" style="height: 500px;"></div>
+
+    <div class="section-title">🔬 Specialty Deep Dive</div>
     <div class="controls">
         <label for="specSelect"><strong>Select Specialty: </strong></label>
         <select id="specSelect" onchange="updateDashboard()"></select>
@@ -219,18 +242,48 @@ def generate_static_site():
     </div>
 
     <div class="charts-grid">
+        <div id="chart-joins" class="chart-box chart-full"></div>
+        
+        <div id="chart-trend" class="chart-box chart-full"></div>
         <div id="chart-exp" class="chart-box"></div>
-        <div id="chart-trend" class="chart-box"></div>
         <div id="chart-dens" class="chart-box"></div>
+    </div>
+
+    <div class="explanation">
+        <strong>📉 How is "Net Change" calculated?</strong><br>
+        (Rolling 10y Inflow) MINUS (Rolling 10y Outflow). It shows if a specialty is replacing its retirees fast enough.
     </div>
 </div>
 
 <script>
-    // --- EMBEDDED DATA ---
-    const data = {json_data};
+    const data = {json_dashboard};
+    const globalData = {json_global};
     const specialties = Object.keys(data).sort();
 
-    // --- INITIALIZE DROPDOWN ---
+    // --- 1. RENDER GLOBAL VELOCITY MAP ---
+    const mapTrace = {{
+        x: globalData.map(d => d.x),
+        y: globalData.map(d => d.y),
+        text: globalData.map(d => d.name),
+        mode: 'markers',
+        marker: {{
+            size: globalData.map(d => Math.sqrt(d.x) * 1.5), // Size by total doctors
+            color: globalData.map(d => d.y), // Color by velocity
+            colorscale: 'Viridis',
+            showscale: true,
+            opacity: 0.8
+        }}
+    }};
+    
+    Plotly.newPlot('chart-velocity', [mapTrace], {{
+        title: 'Size (Total Doctors) vs Growth Velocity (% Juniors)',
+        xaxis: {{ title: 'Total Doctors (Size)' }},
+        yaxis: {{ title: 'Velocity (Junior %) - Higher is Faster Growth' }},
+        hovermode: 'closest'
+    }}, {{responsive: true}});
+
+
+    // --- 2. INITIALIZE DROPDOWN ---
     const select = document.getElementById('specSelect');
     specialties.forEach(spec => {{
         const opt = document.createElement('option');
@@ -239,36 +292,33 @@ def generate_static_site():
         select.appendChild(opt);
     }});
 
-    // --- MAIN UPDATE FUNCTION ---
+    // --- 3. MAIN UPDATE FUNCTION ---
     function updateDashboard() {{
         const spec = select.value;
         const d = data[spec];
         
-        // 1. Update KPIs
+        // KPIs
         document.getElementById('kpi-total').innerText = d.total;
-        
         const netElem = document.getElementById('kpi-net');
         netElem.innerText = (d.net_now > 0 ? "+" : "") + d.net_now;
         netElem.style.color = d.net_now >= 0 ? "#2ecc71" : "#e74c3c";
-
         const usaElem = document.getElementById('kpi-usa');
         usaElem.innerText = d.usa_text;
         usaElem.style.color = d.usa_color;
 
-        // 2. PLOT: Experience Structure (Bar)
-        Plotly.newPlot('chart-exp', [{{
-            x: d.charts.exp_x,
-            y: d.charts.exp_y,
+        // CHART A: New Licenses per Year (Bar)
+        Plotly.newPlot('chart-joins', [{{
+            x: d.charts.years_x,
+            y: d.charts.years_y,
             type: 'bar',
-            marker: {{ color: ['#2ecc71', '#3498db', '#3498db', '#e74c3c'] }}
+            marker: {{ color: '#3498db' }}
         }}], {{
-            title: '1. Experience Structure',
+            title: 'Number of New Licenses Issued Per Year (1980-2024)',
             margin: {{ t: 40, b: 40, l: 40, r: 20 }},
-            yaxis: {{ title: 'Number of Doctors' }}
+            xaxis: {{ title: 'Year' }}
         }}, {{responsive: true}});
 
-        // 3. PLOT: Trailing Net Change (Line)
-        // Color line green if above 0, red if below
+        // CHART B: Net Pipeline Trend
         const trendTrace = {{
             x: d.charts.trend_x,
             y: d.charts.trend_y,
@@ -277,19 +327,28 @@ def generate_static_site():
             line: {{ width: 3, color: '#34495e' }},
             marker: {{ 
                 color: d.charts.trend_y.map(v => v >= 0 ? '#2ecc71' : '#e74c3c'),
-                size: 8
+                size: 6
             }}
         }};
-        
         Plotly.newPlot('chart-trend', [trendTrace], {{
-            title: '2. Net Change Trend (10y Window)',
+            title: 'Net Pipeline Health (1980-2030)',
             margin: {{ t: 40, b: 40, l: 40, r: 20 }},
-            shapes: [{{ type: 'line', x0: d.charts.trend_x[0], x1: d.charts.trend_x[d.charts.trend_x.length-1], y0: 0, y1: 0, line: {{ color: 'gray', width: 1, dash: 'dot' }} }}],
-            xaxis: {{ title: 'Year' }},
-            yaxis: {{ title: 'Net Change (In - Out)' }}
+            shapes: [{{ type: 'line', x0: 1980, x1: 2030, y0: 0, y1: 0, line: {{ color: 'red', width: 2, dash: 'dot' }} }}],
+            xaxis: {{ title: 'Year', range: [1980, 2030] }}
         }}, {{responsive: true}});
 
-        // 4. PLOT: Density vs USA (Horizontal Bar)
+        // CHART C: Experience Structure
+        Plotly.newPlot('chart-exp', [{{
+            x: d.charts.exp_x,
+            y: d.charts.exp_y,
+            type: 'bar',
+            marker: {{ color: ['#2ecc71', '#3498db', '#3498db', '#e74c3c'] }}
+        }}], {{
+            title: 'Experience Structure',
+            margin: {{ t: 40, b: 40, l: 40, r: 20 }}
+        }}, {{responsive: true}});
+
+        // CHART D: Density
         const densityTrace = {{
             x: d.charts.dens_x,
             y: d.charts.dens_y,
@@ -299,27 +358,17 @@ def generate_static_site():
             text: d.charts.dens_x.map(v => v.toFixed(3)),
             textposition: 'auto'
         }};
-
         const densLayout = {{
-            title: '3. Density (per 1,000)',
+            title: 'Density (per 1,000)',
             margin: {{ t: 40, b: 40, l: 80, r: 20 }},
             xaxis: {{ zeroline: false }}
         }};
-
-        // Add benchmark line if USA exists
         if(d.charts.usa_bench) {{
-            densLayout.shapes = [{{
-                type: 'line',
-                x0: d.charts.usa_bench, x1: d.charts.usa_bench,
-                y0: -0.5, y1: 1.5,
-                line: {{ color: 'red', width: 2, dash: 'dot' }}
-            }}];
+            densLayout.shapes = [{{ type: 'line', x0: d.charts.usa_bench, x1: d.charts.usa_bench, y0: -0.5, y1: 1.5, line: {{ color: 'red', width: 2, dash: 'dot' }} }}];
         }}
-
         Plotly.newPlot('chart-dens', [densityTrace], densLayout, {{responsive: true}});
     }}
 
-    // Initialize first view
     updateDashboard();
 </script>
 
@@ -330,7 +379,7 @@ def generate_static_site():
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html_content)
     
-    print("✅ Success! 'index.html' updated with new interactive logic.")
+    print("✅ Success! Added Global Map and Yearly Joins chart.")
 
 if __name__ == "__main__":
     generate_static_site()
