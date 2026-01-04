@@ -1,14 +1,14 @@
 import pandas as pd
-import plotly.express as px
-import plotly.io as pio
+import json
 import datetime
+import plotly.utils
 
-# --- CONFIG ---
+# --- CONFIGURATION ---
 CSV_FILE = "israel_doctors_safe.csv"
 ISRAEL_POPULATION = 10_170_000
-RETIREMENT_AGE_EXPERIENCE = 43
+RETIREMENT_AGE_EXPERIENCE = 45
 
-# --- USA BENCHMARKS ---
+# --- USA BENCHMARKS (AAMC 2023) ---
 AAMC_USA_BENCHMARKS = {
     'רפואה פנימית': 0.376, 'רפואת המשפחה': 0.368, 'רפואת ילדים': 0.185,
     'רפואה דחופה': 0.151, 'יילוד וגינקולוגיה': 0.130, 'הרדמה': 0.128,
@@ -26,14 +26,14 @@ AAMC_USA_BENCHMARKS = {
     'רפואת ספורט': 0.012,
 }
 
-def load_data():
+def load_and_clean_data():
     try:
         df = pd.read_csv(CSV_FILE)
     except FileNotFoundError:
-        print("Error: CSV not found.")
+        print("❌ Error: CSV file not found.")
         return None
 
-    # Normalization
+    # --- NORMALIZATION ---
     ent_target = 'מחלות אף אוזן וגרון'
     ent_source = 'מחלות א.א.ג. וכירורגיית ראש-צוואר'
     df.loc[df['specialty_1'] == ent_source, 'specialty_1'] = ent_target
@@ -54,134 +54,283 @@ def load_data():
     }
     df['specialty_1'] = df['specialty_1'].replace(normalization_map)
     df['specialty_2'] = df['specialty_2'].replace(normalization_map)
-    
+
     df['clean_date'] = pd.to_datetime(df['registration_date'], format='%d/%m/%Y', errors='coerce')
     df = df.dropna(subset=['clean_date'])
-    df['year'] = df['clean_date'].dt.year
-    df['experience'] = datetime.datetime.now().year - df['year']
+    df['reg_year'] = df['clean_date'].dt.year
+    df['retirement_year'] = df['reg_year'] + RETIREMENT_AGE_EXPERIENCE
+    
+    current_year = datetime.datetime.now().year
+    df['experience'] = current_year - df['reg_year']
+    
     return df
 
-def generate_html_report():
-    df = load_data()
+def generate_static_site():
+    df = load_and_clean_data()
     if df is None: return
 
+    # Filter Active Doctors
     active_df = df[df['experience'] <= RETIREMENT_AGE_EXPERIENCE].copy()
     
+    # Get Unique Specialties
     s1 = active_df['specialty_1'].dropna().astype(str).unique().tolist()
     s2 = active_df['specialty_2'].dropna().astype(str).unique().tolist()
     unique_specialties = sorted(list(set(s1 + s2)))
     unique_specialties = [s for s in unique_specialties if s.lower() not in ['nan', 'none', '']]
 
-    # --- CALCULATE STATS ---
-    all_stats = []
+    # --- PRE-CALCULATE ALL DATA ---
+    dashboard_data = {}
+    
+    print("⏳ Processing specialties...")
+    
     for spec in unique_specialties:
+        # LOGIC: Spec 1 OR Spec 2
         mask = (active_df['specialty_1'] == spec) | (active_df['specialty_2'] == spec)
         spec_df = active_df[mask]
         total = len(spec_df)
-        if total < 30: continue
+        
+        if total < 30: continue # Skip small specialties
 
-        inflow = len(spec_df[spec_df['experience'] <= 10])
-        outflow = len(spec_df[spec_df['experience'] >= (RETIREMENT_AGE_EXPERIENCE - 10)])
-        net_change = inflow - outflow
-        velocity = (inflow / total) * 100
-        israel_density = (total / ISRAEL_POPULATION) * 1000
+        # 1. HEADLINE STATS (Current Snapshot)
+        inflow_now = len(spec_df[spec_df['experience'] <= 10])
+        outflow_now = len(spec_df[spec_df['experience'] >= (RETIREMENT_AGE_EXPERIENCE - 10)])
+        net_now = inflow_now - outflow_now
         
-        bench = AAMC_USA_BENCHMARKS.get(spec)
-        gap_str = "N/A"
-        gap_color = "gray"
+        density = (total / ISRAEL_POPULATION) * 1000
+        usa_bench = AAMC_USA_BENCHMARKS.get(spec, None)
         
-        if bench:
-            gap = israel_density - bench
+        usa_text = "No Benchmark"
+        usa_color = "gray"
+        
+        if usa_bench:
+            gap = density - usa_bench
             gap_docs = int(gap * (ISRAEL_POPULATION / 1000))
             if gap < 0:
-                gap_str = f"🔴 Shortage ({gap_docs})"
-                gap_color = "#ffebee" # Light Red
+                usa_text = f"Deficit: {gap_docs} docs"
+                usa_color = "#e74c3c" # Red
             else:
-                gap_str = f"🟢 Surplus (+{gap_docs})"
-                gap_color = "#e8f5e9" # Light Green
+                usa_text = f"Surplus: +{gap_docs} docs"
+                usa_color = "#2ecc71" # Green
+
+        # 2. EXPERIENCE STRUCTURE (Histogram)
+        bins = [0, 10, 20, 30, 40]
+        labels = ['Juniors (0-10)', 'Mid (10-20)', 'Senior (20-30)', 'Vet (30+)']
+        exp_groups = pd.cut(spec_df['experience'], bins=bins, labels=labels, right=False)
+        exp_counts = exp_groups.value_counts().sort_index().tolist()
         
-        trend_icon = "🟢" if net_change > 0 else "🔴"
-        if abs(net_change) < 5: trend_icon = "🟡"
-
-        all_stats.append({
-            'Specialty': spec,
-            'Total Doctors': total,
-            'Net Change (10y)': f"{trend_icon} {net_change:+d}",
-            'Velocity (% Juniors)': f"{velocity:.1f}%",
-            'USA Status': gap_str,
-            '_raw_velocity': velocity
-        })
-
-    stats_df = pd.DataFrame(all_stats)
-    stats_df = stats_df.sort_values('_raw_velocity', ascending=False).drop(columns=['_raw_velocity'])
-
-    # --- 1. CREATE PLOTLY CHART ---
-    fig = px.scatter(
-        stats_df, x='Total Doctors', y=stats_df['Velocity (% Juniors)'].str.replace('%','').astype(float),
-        hover_name='Specialty', size='Total Doctors', color='USA Status',
-        title="<b>Market Map:</b> Size vs Growth Velocity",
-        height=500
-    )
-    fig.update_layout(template="plotly_white")
-    chart_html = pio.to_html(fig, full_html=False, include_plotlyjs='cdn')
-
-    # --- 2. CREATE HTML TABLE ---
-    # We use simple CSS to make the table look professional
-    table_html = stats_df.to_html(index=False, classes='styled-table', escape=False)
-
-    # --- 3. ASSEMBLE FULL HTML PAGE ---
-    full_html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <title>Israel Medical Workforce Report</title>
-        <style>
-            body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f4f4f9; }}
-            .container {{ max-width: 1000px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 0 20px rgba(0,0,0,0.1); }}
-            h1 {{ text-align: center; color: #333; }}
-            .summary-box {{ background-color: #e3f2fd; padding: 15px; border-radius: 5px; margin-bottom: 20px; text-align: center; }}
+        # 3. TRAILING NET CHANGE (Time Series Analysis)
+        # We calculate the window for years 2015 to 2030
+        years_range = list(range(2015, 2031))
+        net_trend_y = []
+        
+        for y in years_range:
+            # Inflow: Registered between (Y-10) and Y
+            inflow_y = len(spec_df[(spec_df['reg_year'] > (y - 10)) & (spec_df['reg_year'] <= y)])
             
-            /* Table Styling */
-            .styled-table {{ width: 100%; border-collapse: collapse; margin: 25px 0; font-size: 0.9em; box-shadow: 0 0 20px rgba(0, 0, 0, 0.15); }}
-            .styled-table thead tr {{ background-color: #009879; color: #ffffff; text-align: left; }}
-            .styled-table th, .styled-table td {{ padding: 12px 15px; border-bottom: 1px solid #dddddd; }}
-            .styled-table tbody tr:nth-of-type(even) {{ background-color: #f3f3f3; }}
-            .styled-table tbody tr:last-of-type {{ border-bottom: 2px solid #009879; }}
+            # Outflow: Retiring between Y and (Y+10)
+            # Retiring year is reg_year + 43
+            outflow_y = len(spec_df[(spec_df['retirement_year'] >= y) & (spec_df['retirement_year'] < (y + 10))])
             
-            /* Responsive */
-            @media screen and (max-width: 600px) {{
-                .styled-table {{ display: block; overflow-x: auto; }}
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🇮🇱 Israel Medical Workforce Report</h1>
-            <div class="summary-box">
-                <p><strong>Generated on:</strong> {datetime.datetime.now().strftime('%Y-%m-%d')}</p>
-                <p>Data based on Ministry of Health Registry (Active Doctors &lt; {RETIREMENT_AGE_EXPERIENCE} years exp)</p>
-            </div>
+            net_trend_y.append(inflow_y - outflow_y)
 
-            {chart_html}
+        # 4. DENSITY COMPARISON
+        density_x = [density]
+        density_y = ['Israel']
+        density_colors = ['#3498db']
+        
+        if usa_bench:
+            density_x.append(usa_bench)
+            density_y.append('USA')
+            density_colors.append('#2c3e50')
 
-            <hr style="margin: 40px 0;">
+        # STORE DATA
+        dashboard_data[spec] = {
+            "total": int(total),
+            "net_now": int(net_now),
+            "usa_text": usa_text,
+            "usa_color": usa_color,
+            "charts": {
+                "exp_x": labels,
+                "exp_y": exp_counts,
+                "trend_x": years_range,
+                "trend_y": net_trend_y,
+                "dens_x": density_x,
+                "dens_y": density_y,
+                "dens_c": density_colors,
+                "usa_bench": usa_bench  # For drawing the line
+            }
+        }
 
-            <h2>Detailed Data Table</h2>
-            {table_html}
-            
-            <p style="text-align:center; color:gray; font-size:12px; margin-top:50px;">
-                Generated by Python Analysis
-            </p>
+    # SERIALIZE TO JSON
+    json_data = json.dumps(dashboard_data, default=lambda x: int(x) if isinstance(x, (np.int64, np.int32)) else x)
+
+    # --- HTML TEMPLATE ---
+    html_content = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Israel Medical Workforce Dashboard</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body {{ font-family: 'Segoe UI', sans-serif; background-color: #f4f6f8; margin: 0; padding: 20px; }}
+        .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }}
+        
+        h1 {{ text-align: center; color: #2c3e50; margin-bottom: 5px; }}
+        .subtitle {{ text-align: center; color: #7f8c8d; margin-bottom: 30px; font-size: 0.9em; }}
+        
+        .controls {{ text-align: center; margin-bottom: 30px; padding: 20px; background: #ecf0f1; border-radius: 8px; }}
+        select {{ padding: 10px 20px; font-size: 16px; border-radius: 5px; border: 1px solid #bdc3c7; min-width: 300px; }}
+        
+        .kpi-row {{ display: flex; justify-content: space-around; margin-bottom: 30px; flex-wrap: wrap; gap: 10px; }}
+        .kpi-card {{ background: #fff; padding: 15px 25px; border-radius: 8px; border: 1px solid #eee; text-align: center; min-width: 200px; box-shadow: 0 2px 5px rgba(0,0,0,0.03); }}
+        .kpi-val {{ font-size: 24px; font-weight: bold; color: #2c3e50; display: block; }}
+        .kpi-label {{ font-size: 14px; color: #95a5a6; text-transform: uppercase; letter-spacing: 1px; }}
+        
+        .charts-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; }}
+        .chart-box {{ background: white; padding: 10px; border-radius: 8px; border: 1px solid #eee; min-height: 350px; }}
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🇮🇱 Israel Medical Workforce Analysis</h1>
+    <div class="subtitle">Data source: Ministry of Health Registry (Active Doctors &lt; 43y experience)</div>
+
+    <div class="controls">
+        <label for="specSelect"><strong>Select Specialty: </strong></label>
+        <select id="specSelect" onchange="updateDashboard()"></select>
+    </div>
+
+    <div class="kpi-row">
+        <div class="kpi-card">
+            <span class="kpi-val" id="kpi-total">-</span>
+            <span class="kpi-label">Total Doctors</span>
         </div>
-    </body>
-    </html>
+        <div class="kpi-card">
+            <span class="kpi-val" id="kpi-net">-</span>
+            <span class="kpi-label">Current Net Trend</span>
+        </div>
+        <div class="kpi-card">
+            <span class="kpi-val" id="kpi-usa">-</span>
+            <span class="kpi-label">USA Benchmark Gap</span>
+        </div>
+    </div>
+
+    <div class="charts-grid">
+        <div id="chart-exp" class="chart-box"></div>
+        <div id="chart-trend" class="chart-box"></div>
+        <div id="chart-dens" class="chart-box"></div>
+    </div>
+</div>
+
+<script>
+    // --- EMBEDDED DATA ---
+    const data = {json_data};
+    const specialties = Object.keys(data).sort();
+
+    // --- INITIALIZE DROPDOWN ---
+    const select = document.getElementById('specSelect');
+    specialties.forEach(spec => {{
+        const opt = document.createElement('option');
+        opt.value = spec;
+        opt.innerHTML = spec;
+        select.appendChild(opt);
+    }});
+
+    // --- MAIN UPDATE FUNCTION ---
+    function updateDashboard() {{
+        const spec = select.value;
+        const d = data[spec];
+        
+        // 1. Update KPIs
+        document.getElementById('kpi-total').innerText = d.total;
+        
+        const netElem = document.getElementById('kpi-net');
+        netElem.innerText = (d.net_now > 0 ? "+" : "") + d.net_now;
+        netElem.style.color = d.net_now >= 0 ? "#2ecc71" : "#e74c3c";
+
+        const usaElem = document.getElementById('kpi-usa');
+        usaElem.innerText = d.usa_text;
+        usaElem.style.color = d.usa_color;
+
+        // 2. PLOT: Experience Structure (Bar)
+        Plotly.newPlot('chart-exp', [{{
+            x: d.charts.exp_x,
+            y: d.charts.exp_y,
+            type: 'bar',
+            marker: {{ color: ['#2ecc71', '#3498db', '#3498db', '#e74c3c'] }}
+        }}], {{
+            title: '1. Experience Structure',
+            margin: {{ t: 40, b: 40, l: 40, r: 20 }},
+            yaxis: {{ title: 'Number of Doctors' }}
+        }}, {{responsive: true}});
+
+        // 3. PLOT: Trailing Net Change (Line)
+        // Color line green if above 0, red if below
+        const trendTrace = {{
+            x: d.charts.trend_x,
+            y: d.charts.trend_y,
+            type: 'scatter',
+            mode: 'lines+markers',
+            line: {{ width: 3, color: '#34495e' }},
+            marker: {{ 
+                color: d.charts.trend_y.map(v => v >= 0 ? '#2ecc71' : '#e74c3c'),
+                size: 8
+            }}
+        }};
+        
+        Plotly.newPlot('chart-trend', [trendTrace], {{
+            title: '2. Net Change Trend (10y Window)',
+            margin: {{ t: 40, b: 40, l: 40, r: 20 }},
+            shapes: [{{ type: 'line', x0: d.charts.trend_x[0], x1: d.charts.trend_x[d.charts.trend_x.length-1], y0: 0, y1: 0, line: {{ color: 'gray', width: 1, dash: 'dot' }} }}],
+            xaxis: {{ title: 'Year' }},
+            yaxis: {{ title: 'Net Change (In - Out)' }}
+        }}, {{responsive: true}});
+
+        // 4. PLOT: Density vs USA (Horizontal Bar)
+        const densityTrace = {{
+            x: d.charts.dens_x,
+            y: d.charts.dens_y,
+            type: 'bar',
+            orientation: 'h',
+            marker: {{ color: d.charts.dens_c }},
+            text: d.charts.dens_x.map(v => v.toFixed(3)),
+            textposition: 'auto'
+        }};
+
+        const densLayout = {{
+            title: '3. Density (per 1,000)',
+            margin: {{ t: 40, b: 40, l: 80, r: 20 }},
+            xaxis: {{ zeroline: false }}
+        }};
+
+        // Add benchmark line if USA exists
+        if(d.charts.usa_bench) {{
+            densLayout.shapes = [{{
+                type: 'line',
+                x0: d.charts.usa_bench, x1: d.charts.usa_bench,
+                y0: -0.5, y1: 1.5,
+                line: {{ color: 'red', width: 2, dash: 'dot' }}
+            }}];
+        }}
+
+        Plotly.newPlot('chart-dens', [densityTrace], densLayout, {{responsive: true}});
+    }}
+
+    // Initialize first view
+    updateDashboard();
+</script>
+
+</body>
+</html>
     """
 
     with open("index.html", "w", encoding="utf-8") as f:
-        f.write(full_html)
+        f.write(html_content)
     
-    print("✅ Success! 'index.html' has been created.")
+    print("✅ Success! 'index.html' updated with new interactive logic.")
 
 if __name__ == "__main__":
-    generate_html_report()
+    generate_static_site()
