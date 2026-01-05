@@ -198,27 +198,27 @@ def generate_static_site():
 
         # CHART 2: Pipeline
         history_years = list(range(1980, CURRENT_YEAR + 1))
-        future_years = list(range(CURRENT_YEAR + 1, 2036))
+        future_years = list(range(CURRENT_YEAR + 1, CURRENT_YEAR + 5))
         net_trend_history, net_trend_forecast = [], []
         spec_retire_years = spec_df_all_unique['retirement_year_spec'].dropna().astype(int)
 
         for y in history_years:
-            inflow = len(spec_start_years[(spec_start_years > (y - 10)) & (spec_start_years <= y)])
-            outflow = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y + 10))])
+            inflow = len(spec_start_years[(spec_start_years > (y - 8)) & (spec_start_years <= y)])
+            outflow = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y - 8))])
             net_trend_history.append(inflow - outflow)
 
         for y in future_years:
-            real_part = range(y - 10, CURRENT_YEAR + 1)
-            proj_part = range(max(y - 10, CURRENT_YEAR + 1), y + 1)
+            real_part = range(y - 8, CURRENT_YEAR + 1)
+            proj_part = range(max(y - 8, CURRENT_YEAR + 1), y + 1)
             count_real = len(spec_start_years[spec_start_years.isin(real_part)])
             count_proj = len(proj_part) * avg_inflow
-            outflow = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y + 10))])
+            outflow = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y - 8))])
             net_trend_forecast.append((count_real + count_proj) - outflow)
 
         # CHART 3: Pie (Specialty Experience)
         # UPDATED BINS: 0-10, 10-25, 25-45, 45+
-        bins = [0, 10, 25, 45, 120]
-        labels = ['Juniors (0-10y)', 'Mid (10-25y)', 'Seniors (25-45y)', 'Veterans (45y+)']
+        bins = [0, 10, 25, 120]
+        labels = ['Juniors (0-10y)', 'Mid (10-25y)', 'Seniors (25-45y)']
         exp_groups = pd.cut(unique_active_docs['spec_experience'], bins=bins, labels=labels, right=False)
         exp_counts = exp_groups.value_counts().sort_index()
         pie_labels = exp_counts.index.tolist()
@@ -478,3 +478,4 @@ def generate_static_site():
 
 if __name__ == "__main__":
     generate_static_site()
+
