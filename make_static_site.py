@@ -9,7 +9,7 @@ import os
 # --- CONFIGURATION ---
 API_RESOURCE_ID = "9c64c522-bbc2-48fe-96fb-3b2a8626f59e"
 ISRAEL_POPULATION = 10_170_000
-RETIREMENT_AGE_EXPERIENCE = 45
+RETIREMENT_AGE_EXPERIENCE = 46
 CURRENT_YEAR = datetime.datetime.now().year
 TIMESTAMP = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
 
@@ -32,29 +32,17 @@ AAMC_USA_BENCHMARKS = {
 }
 
 def get_year_simple(val):
-    """
-    Extracts year by simply taking the last 4 characters.
-    Handles: '25122025', '112025', '25/12/2025', '2025'
-    """
+    """Extracts year by simply taking the last 4 characters."""
     s = str(val).strip()
-    
-    # Remove potential float suffix (.0)
     if s.endswith('.0'): s = s[:-2]
-    
     if not s or s.lower() in ['nan', 'none', '', 'nat']:
         return np.nan
-
-    # Strategy: Just take the last 4 digits if string is long enough
-    # This works for ddmmyyyy, dmyyyy, dd/mm/yyyy, etc.
     if len(s) >= 4:
-        # Check if last 4 are digits
         potential_year = s[-4:]
         if potential_year.isdigit():
             y = int(potential_year)
-            # Basic sanity check (1900-2100)
             if 1900 <= y <= CURRENT_YEAR + 1:
                 return y
-    
     return np.nan
 
 def load_and_clean_data():
@@ -93,7 +81,6 @@ def load_and_clean_data():
     }
     df = df.rename(columns=col_map)
     
-    # Construct Name
     if 'first_name' in df.columns:
         df['first_name'] = df['first_name'].astype(str).str.strip()
         df['last_name'] = df['last_name'].astype(str).str.strip()
@@ -101,11 +88,9 @@ def load_and_clean_data():
     else:
         df['Name'] = "Unknown"
 
-    # Fallback ID
     if 'license_num' not in df.columns:
         df['license_num'] = df['Name'] + "_" + df['license_date_raw'].astype(str)
 
-    # --- YEAR EXTRACTION (Using "Last 4 Digits" Strategy) ---
     print("⏳ Extracting years...")
     if 'license_date_raw' in df.columns:
         df['gen_year'] = df['license_date_raw'].apply(get_year_simple)
@@ -118,34 +103,52 @@ def load_and_clean_data():
     else:
         df['spec_year'] = np.nan
 
-    # Drop invalid general years
     df = df.dropna(subset=['gen_year'])
 
-    # Normalize Specialties
+    # --- NORMALIZE SPECIALTIES (NEW LOGIC) ---
     if 'specialty_name' not in df.columns: df['specialty_name'] = "Unknown"
     df['specialty_name'] = df['specialty_name'].astype(str).str.strip()
     
-    ent_target = 'מחלות אף אוזן וגרון'
-    df.loc[df['specialty_name'] == 'מחלות א.א.ג. וכירורגיית ראש-צוואר', 'specialty_name'] = ent_target
-    df.loc[df['specialty_name'].str.contains('חזה|לב', regex=True), 'specialty_name'] = 'כירורגיה חזה ולב'
-
     normalization_map = {
-        'רפואת משפחה': 'רפואת המשפחה', 'אורתופדיה': 'כירורגיה אורתופדית',
+        # 1. ENT Union
+        'מחלות אף אוזן וגרון': 'מחלות א.א.ג. וכירורגיית ראש-צוואר',
+        
+        # 2. Cardiac Surgery (Adult)
+        'כירורגית בית החזה - מסלול כירורגית לב': 'כירורגית לב',
+        'כירורגיה של בית החזה - מסלול לב מבוגרים': 'כירורגית לב',
+        
+        # 3. Pediatric Cardiac Surgery
+        'כירורגיה של בית החזה - מסלול לב ילדים': 'כירורגית לב ילדים',
+        
+        # 4. General Thoracic & Heart
+        'כירורגית בית החזה - מסלול כירורגית לב וכירורגית חזה כללית': 'כירורגית חזה ולב',
+        
+        # 5. General Thoracic
+        'כירורגית בית החזה - מסלול כירורגית חזה כללית': 'כירורגיה של בית החזה',
+        
+        # 6. Child Neurology
+        'נוירולוגיית ילדים': 'נוירולוגית ילדים והתפתחות הילד',
+        
+        # 7. Emergency Medicine
+        'רפואה דחופה - מסלול מבוגרים': 'רפואה דחופה',
+        
+        # Previous Fixes
+        'רפואת משפחה': 'רפואת המשפחה', 
+        'אורתופדיה': 'כירורגיה אורתופדית',
         'עיניים': 'מחלות עיניים', 'רפואת עיניים': 'מחלות עיניים',
-        'אורולוגיה': 'כירורגיה אורולוגית', 'עור ומין': 'דרמטולוגיה-מחלות עור ומין',
-        'כירורגיה פלסטית': 'כירורגיה פלסטית ואסתטית', 'טיפול נמרץ': 'טיפול נמרץ כללי'
+        'אורולוגיה': 'כירורגיה אורולוגית', 
+        'עור ומין': 'דרמטולוגיה-מחלות עור ומין',
+        'כירורגיה פלסטית': 'כירורגיה פלסטית ואסתטית', 
+        'טיפול נמרץ': 'טיפול נמרץ כללי'
     }
+    
     df['specialty_name'] = df['specialty_name'].replace(normalization_map)
 
     # CALCULATE EXPERIENCE
     df['gen_experience'] = CURRENT_YEAR - df['gen_year']
-    
-    # Specialty Experience
     df['spec_experience'] = CURRENT_YEAR - df['spec_year']
-    # Fallback only if missing
     df['spec_experience'] = df['spec_experience'].fillna(df['gen_experience']) 
 
-    # Retirement (using Specialty Year preferrably, else General)
     df['retirement_year_spec'] = df['spec_year'].fillna(df['gen_year']) + RETIREMENT_AGE_EXPERIENCE
 
     return df
@@ -154,7 +157,6 @@ def generate_static_site():
     df = load_and_clean_data()
     if df is None: return
 
-    # Filter Active Doctors
     active_df_rows = df[df['gen_experience'] <= RETIREMENT_AGE_EXPERIENCE].copy()
     unique_specialties = sorted([s for s in df['specialty_name'].unique() if s.lower() not in ['nan', 'none', '', 'unknown']])
     
@@ -172,7 +174,6 @@ def generate_static_site():
 
         unique_active_docs = spec_df_active.drop_duplicates(subset='license_num')
         
-        # Replacement Ratio (Biological Age based)
         juniors_count = len(unique_active_docs[unique_active_docs['gen_experience'] <= 10])
         veterans_count = len(unique_active_docs[unique_active_docs['gen_experience'] >= 30])
         replacement_ratio = round(juniors_count / veterans_count, 2) if veterans_count > 0 else 99.9
@@ -196,8 +197,7 @@ def generate_static_site():
 
         global_velocity_data.append({'x': total_active, 'y': velocity, 'name': spec, 'color': usa_color})
 
-        # --- CHART 1: New Licenses (Using Extracted Year) ---
-        # Deduplicate: if same doctor listed twice for same specialty, count only once
+        # CHART 1: New Licenses
         spec_df_all_unique = spec_df_all.drop_duplicates(subset='license_num')
         spec_start_years = spec_df_all_unique['spec_year'].dropna().astype(int)
         
@@ -205,12 +205,11 @@ def generate_static_site():
         years_idx = list(range(1980, CURRENT_YEAR + 1))
         joins_counts = [int(joins_per_year.get(y, 0)) for y in years_idx]
 
-        # Forecast logic
         recent_years = range(CURRENT_YEAR - 5, CURRENT_YEAR)
         recent_inflow_sum = sum([joins_per_year.get(y, 0) for y in recent_years])
         avg_inflow = max(1, int(recent_inflow_sum / 5))
 
-        # --- CHART 2: Net Pipeline ---
+        # CHART 2: Pipeline
         history_years = list(range(1980, CURRENT_YEAR + 1))
         future_years = list(range(CURRENT_YEAR + 1, 2036))
         net_trend_history, net_trend_forecast = [], []
@@ -230,17 +229,15 @@ def generate_static_site():
             outflow = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y + 10))])
             net_trend_forecast.append((count_real + count_proj) - outflow)
 
-        # --- CHART 3: Experience Structure (PIE CHART) ---
-        # Bins: 0-10, 10-20, 20-45, 45+
-        bins = [0, 10, 20, 45, 120]
-        labels = ['Juniors (0-10y)', 'Mid (10-20y)', 'Seniors (20-45y)', 'Veterans (45y+)']
-        
+        # CHART 3: Pie
+        bins = [0, 10, 25]
+        labels = ['Juniors (0-10y)', 'Mid (10-25y)', 'Seniors (25-40y)']
         exp_groups = pd.cut(unique_active_docs['spec_experience'], bins=bins, labels=labels, right=False)
         exp_counts = exp_groups.value_counts().sort_index()
         pie_labels = exp_counts.index.tolist()
         pie_values = exp_counts.values.tolist()
         
-        # --- CHART 4: Density ---
+        # CHART 4: Density
         density_x = [density]
         density_y = ['Israel']
         density_colors = ['#3498db']
