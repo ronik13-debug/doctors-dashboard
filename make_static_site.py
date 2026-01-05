@@ -3,10 +3,11 @@ import json
 import datetime
 import plotly.utils
 import numpy as np
+import requests
 import os
 
 # --- CONFIGURATION ---
-CSV_FILE = "israel_doctors.csv" # Ensure this matches your filename
+API_RESOURCE_ID = "9c64c522-bbc2-48fe-96fb-3b2a8626f59e"
 ISRAEL_POPULATION = 10_170_000
 RETIREMENT_AGE_EXPERIENCE = 45
 CURRENT_YEAR = datetime.datetime.now().year
@@ -29,32 +30,120 @@ AAMC_USA_BENCHMARKS = {
     'רפואת ספורט': 0.012,
 }
 
-def load_and_clean_data():
-    if not os.path.exists(CSV_FILE):
-        print(f"❌ Error: {CSV_FILE} not found. Please run the scraper first.")
-        return None
+def parse_custom_date(date_str):
+    """
+    Parses dates in formats: ddmmyyyy, ddmyyyy, etc. (No separators)
+    """
+    if pd.isna(date_str) or str(date_str).strip() == "":
+        return pd.NaT
+    
+    s = str(date_str).strip()
+    
+    # Pad with leading zero if only 7 digits (e.g., 1041992 -> 01041992)
+    if len(s) == 7:
+        s = "0" + s
+        
+    if len(s) != 8:
+        # If unexpected length, try standard pandas parsing or fail
+        return pd.to_datetime(s, errors='coerce')
 
     try:
-        df = pd.read_csv(CSV_FILE)
-    except Exception as e:
-        print(f"❌ Error reading CSV: {e}")
-        return None
+        # Format ddmmyyyy
+        day = int(s[0:2])
+        month = int(s[2:4])
+        year = int(s[4:8])
+        return pd.Timestamp(year=year, month=month, day=day)
+    except:
+        return pd.NaT
 
-    # --- 1. NORMALIZE SPECIALTY NAMES ---
-    col_s1_name = 'Specialty 1 Name'
-    col_s2_name = 'Specialty 2 Name'
+def load_and_clean_data():
+    print("⏳ Connecting to data.gov.il API...")
     
+    # 1. FETCH DATA (Pagination loop to get ALL records)
+    api_url = "https://data.gov.il/api/3/action/datastore_search"
+    limit = 32000 # Max allowed per request usually
+    offset = 0
+    all_records = []
+    
+    while True:
+        params = {
+            "resource_id": API_RESOURCE_ID,
+            "limit": limit,
+            "offset": offset
+        }
+        try:
+            r = requests.get(api_url, params=params, timeout=45)
+            r.raise_for_status()
+            data = r.json()
+            
+            if not data.get('success'): break
+            
+            records = data['result']['records']
+            if not records: break
+            
+            all_records.extend(records)
+            offset += limit
+            print(f"   Fetched {len(all_records)} rows...", end='\r')
+            
+            # Safety break
+            if len(records) < limit: break
+            
+        except Exception as e:
+            print(f"\n❌ Error fetching API: {e}")
+            return None
+
+    df = pd.DataFrame(all_records)
+    print(f"\n✅ Total Raw Records: {len(df)}")
+
+    # 2. RENAME COLUMNS (Based on your description + Hebrew Keys)
+    # Hebrew keys usually returned by this API:
+    # 'שם פרטי', 'שם משפחה', 'תאריך רישיון', 'שם התמחות', 'תאריך רישום התמחות'
+    
+    col_map = {
+        'שם פרטי': 'first_name',
+        'שם משפחה': 'last_name',
+        'מספר רישיון': 'license_num',
+        'תאריך רישיון': 'license_date_raw', # Col B
+        'שם התמחות': 'specialty_name',      # The duplicate field
+        'תאריך רישום התמחות': 'spec_date_raw' # Col D/F equivalent
+    }
+    
+    # Apply mapping (ignore columns that don't match)
+    df = df.rename(columns=col_map)
+    
+    # 3. CONSTRUCT NAME
+    df['first_name'] = df['first_name'].astype(str).str.strip()
+    df['last_name'] = df['last_name'].astype(str).str.strip()
+    df['Name'] = df['first_name'] + " " + df['last_name']
+
+    # 4. PARSE DATES (Custom Logic for ddmmyyyy)
+    print("⏳ Parsing dates (ddmmyyyy)...")
+    
+    # A. General License Date (Col B)
+    df['gen_date'] = df['license_date_raw'].apply(parse_custom_date)
+    
+    # B. Specialty Date (Col D/F)
+    df['spec_date'] = df['spec_date_raw'].apply(parse_custom_date)
+    
+    # Fallback: If specialty date is missing, use general date (optional, strictly speaking we should ignore)
+    # df['spec_date'] = df['spec_date'].fillna(df['gen_date'])
+
+    # Drop rows with no valid General Date (cannot calculate retirement)
+    df = df.dropna(subset=['gen_date'])
+
+    # 5. NORMALIZE SPECIALTY NAMES
+    if 'specialty_name' not in df.columns:
+        print("⚠️ Warning: 'specialty_name' column not found in API data.")
+        df['specialty_name'] = "Unknown"
+
+    df['specialty_name'] = df['specialty_name'].astype(str).str.strip()
+
     ent_target = 'מחלות אף אוזן וגרון'
     ent_source = 'מחלות א.א.ג. וכירורגיית ראש-צוואר'
-    df.loc[df[col_s1_name] == ent_source, col_s1_name] = ent_target
-    df.loc[df[col_s2_name] == ent_source, col_s2_name] = ent_target
+    df.loc[df['specialty_name'] == ent_source, 'specialty_name'] = ent_target
 
     thoracic_target = 'כירורגיה חזה ולב'
-    pattern = 'חזה|לב'
-    mask1 = df[col_s1_name].astype(str).str.contains(pattern, regex=True, na=False)
-    df.loc[mask1, col_s1_name] = thoracic_target
-    mask2 = df[col_s2_name].astype(str).str.contains(pattern, regex=True, na=False)
-    df.loc[mask2, col_s2_name] = thoracic_target
+    df.loc[df['specialty_name'].str.contains('חזה|לב', regex=True), 'specialty_name'] = thoracic_target
 
     normalization_map = {
         'רפואת משפחה': 'רפואת המשפחה', 'אורתופדיה': 'כירורגיה אורתופדית',
@@ -62,79 +151,51 @@ def load_and_clean_data():
         'אורולוגיה': 'כירורגיה אורולוגית', 'עור ומין': 'דרמטולוגיה-מחלות עור ומין',
         'כירורגיה פלסטית': 'כירורגיה פלסטית ואסתטית', 'טיפול נמרץ': 'טיפול נמרץ כללי'
     }
-    df[col_s1_name] = df[col_s1_name].replace(normalization_map)
-    df[col_s2_name] = df[col_s2_name].replace(normalization_map)
+    df['specialty_name'] = df['specialty_name'].replace(normalization_map)
 
-    # --- 2. PARSE DATES ---
-    
-    # A. General Registration Date (Column B) -> Used for "Active Doctor" filtering & Experience Grouping
-    df['gen_date'] = pd.to_datetime(df['Registration Date'], format='%d/%m/%Y', errors='coerce')
-    
-    # B. Specialty 1 Date (Column D)
-    df['s1_date'] = pd.to_datetime(df['Specialty 1 Date'], format='%d/%m/%Y', errors='coerce')
-    
-    # C. Specialty 2 Date (Column F)
-    df['s2_date'] = pd.to_datetime(df['Specialty 2 Date'], format='%d/%m/%Y', errors='coerce')
-
-    # Drop rows without a valid general registration date
-    df = df.dropna(subset=['gen_date'])
-
-    # --- 3. CALCULATE GENERAL EXPERIENCE ---
+    # 6. CALCULATE EXPERIENCE
     df['gen_year'] = df['gen_date'].dt.year
+    df['spec_year'] = df['spec_date'].dt.year
     df['gen_experience'] = CURRENT_YEAR - df['gen_year']
     
+    # Calculate Specialty-Specific Retirement Year (Spec Date + 45)
+    # If spec date missing, fallback to Gen Date + 45
+    df['retirement_year_spec'] = df['spec_year'].fillna(df['gen_year']) + RETIREMENT_AGE_EXPERIENCE
+
     return df
 
 def generate_static_site():
     df = load_and_clean_data()
     if df is None: return
 
-    col_s1_name = 'Specialty 1 Name'
-    col_s2_name = 'Specialty 2 Name'
-
-    # Filter Active Doctors based on GENERAL EXPERIENCE (Column B)
-    # This keeps the dashboard focused on doctors who are actually working age
+    # Identify Active Doctors (by General License)
+    # Note: We filter duplicates later for "Total Active"
     active_df = df[df['gen_experience'] <= RETIREMENT_AGE_EXPERIENCE].copy()
     
-    s1 = df[col_s1_name].dropna().astype(str).unique().tolist()
-    s2 = df[col_s2_name].dropna().astype(str).unique().tolist()
-    unique_specialties = sorted(list(set(s1 + s2)))
-    unique_specialties = [s for s in unique_specialties if s.lower() not in ['nan', 'none', '']]
-
+    unique_specialties = sorted([s for s in df['specialty_name'].unique() if s.lower() not in ['nan', 'none', '', 'unknown']])
+    
     dashboard_data = {}
     global_velocity_data = [] 
 
     print("⏳ Processing specialties...")
     
     for spec in unique_specialties:
-        # --- 1. FILTERING FOR THIS SPECIALTY ---
-        mask_s1_all = df[col_s1_name] == spec
-        mask_s2_all = df[col_s2_name] == spec
+        # FILTER: Just rows for this specialty
+        spec_df_all = df[df['specialty_name'] == spec]
+        spec_df_active = active_df[active_df['specialty_name'] == spec]
         
-        mask_s1_active = active_df[col_s1_name] == spec
-        mask_s2_active = active_df[col_s2_name] == spec
-        spec_df_active = active_df[mask_s1_active | mask_s2_active].copy()
+        # Count ACTIVE doctors (Unique IDs for this specialty)
+        total_active = spec_df_active['license_num'].nunique()
         
-        total_active = len(spec_df_active)
         if total_active < 30: continue 
 
-        # --- 2. CONSTRUCT SPECIALTY-SPECIFIC TIMELINES ---
-        # Get the specific date when each doctor acquired THIS specialty
-        dates_from_s1 = df.loc[mask_s1_all, 's1_date']
-        dates_from_s2 = df.loc[mask_s2_all, 's2_date']
-        all_spec_dates = pd.concat([dates_from_s1, dates_from_s2])
+        # --- KPI: Replacement Ratio ---
+        # Based on General Experience (Biological Age)
+        # We deduplicate by license_num to avoid counting same doc twice if they have duplicate rows for same spec
+        unique_active_docs = spec_df_active.drop_duplicates(subset='license_num')
         
-        # Determine the "Specialty Start Year" for everyone
-        spec_start_years = all_spec_dates.dt.year
-        
-        # Determine "Specialty Retirement Year" (Specialty Start + 45)
-        # We use this for the Net Pipeline Outflow calculation
-        spec_retirement_years = spec_start_years + RETIREMENT_AGE_EXPERIENCE
-
-        # --- 3. REPLACEMENT RATIO (KPI) ---
-        # Based on General Experience (Col B) to reflect biological age/seniority
-        juniors_count = len(spec_df_active[spec_df_active['gen_experience'] <= 10])
-        veterans_count = len(spec_df_active[spec_df_active['gen_experience'] >= 30])
+        juniors_count = len(unique_active_docs[unique_active_docs['gen_experience'] <= 10])
+        veterans_count = len(unique_active_docs[unique_active_docs['gen_experience'] >= 30])
         
         if veterans_count > 0:
             replacement_ratio = round(juniors_count / veterans_count, 2)
@@ -145,13 +206,12 @@ def generate_static_site():
         if replacement_ratio > 1.2: ratio_color = "#2ecc71"
         if replacement_ratio < 0.8: ratio_color = "#e74c3c"
 
-        # --- 4. HEADLINE STATS ---
+        # --- KPI: Velocity & Net ---
         velocity = (juniors_count / total_active) * 100
-        
-        # Net Now (KPI)
-        outflow_now = len(spec_df_active[spec_df_active['gen_experience'] >= (RETIREMENT_AGE_EXPERIENCE - 10)])
+        outflow_now = len(unique_active_docs[unique_active_docs['gen_experience'] >= (RETIREMENT_AGE_EXPERIENCE - 10)])
         net_now = juniors_count - outflow_now
         
+        # --- KPI: Density ---
         density = (total_active / ISRAEL_POPULATION) * 1000
         usa_bench = AAMC_USA_BENCHMARKS.get(spec, None)
         usa_text = "No Benchmark"
@@ -174,58 +234,53 @@ def generate_static_site():
             'color': usa_color
         })
 
-        # --- 5. CHARTS LOGIC ---
-        
-        # CHART 1: New Licenses (Inflow)
+        # --- CHART 1: New Licenses (Inflow) ---
+        # Uses Specialty Date (Col D/F equiv)
+        spec_start_years = spec_df_all['spec_year'].dropna()
         joins_per_year = spec_start_years.value_counts().sort_index()
+        
         years_idx = list(range(1980, CURRENT_YEAR + 1))
         joins_counts = [int(joins_per_year.get(y, 0)) for y in years_idx]
 
-        # Calculate Projected Inflow for Forecast (Avg of last 5 years)
+        # Forecast Avg
         recent_years = range(CURRENT_YEAR - 5, CURRENT_YEAR)
         recent_inflow_sum = sum([joins_per_year.get(y, 0) for y in recent_years])
         avg_inflow = max(1, int(recent_inflow_sum / 5))
 
-        # CHART 2: Net Pipeline (Inflow - Outflow)
+        # --- CHART 2: Net Pipeline ---
+        # Uses Specialty Date for Inflow, Specialty Date + 45 for Outflow
         history_years = list(range(1980, CURRENT_YEAR + 1))
         future_years = list(range(CURRENT_YEAR + 1, 2036))
         
         net_trend_history = []
         net_trend_forecast = []
+        
+        spec_retire_years = spec_df_all['retirement_year_spec'].dropna()
 
-        # HISTORY (1980-Current)
         for y in history_years:
-            # Inflow: Count doctors who got THIS specialty in the last 10 years
             inflow_y = len(spec_start_years[(spec_start_years > (y - 10)) & (spec_start_years <= y)])
-            
-            # Outflow: Count doctors who reach "Specialty Retirement Age" in next 10 years
-            # (Using specialty_date + 45)
-            outflow_y = len(spec_retirement_years[(spec_retirement_years >= y) & (spec_retirement_years < (y + 10))])
-            
+            outflow_y = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y + 10))])
             net_trend_history.append(inflow_y - outflow_y)
 
-        # FORECAST (Future)
         for y in future_years:
-            # Forecast Inflow
-            real_part_years = range(y - 10, CURRENT_YEAR + 1)
-            projected_part_years = range(max(y - 10, CURRENT_YEAR + 1), y + 1)
+            real_part = range(y - 10, CURRENT_YEAR + 1)
+            proj_part = range(max(y - 10, CURRENT_YEAR + 1), y + 1)
             
-            count_real = len(spec_start_years[spec_start_years.isin(real_part_years)])
-            count_proj = len(projected_part_years) * avg_inflow
+            count_real = len(spec_start_years[spec_start_years.isin(real_part)])
+            count_proj = len(proj_part) * avg_inflow
+            
             inflow_forecast = count_real + count_proj
-            
-            # Forecast Outflow (Based on Specialty Date)
-            outflow_forecast = len(spec_retirement_years[(spec_retirement_years >= y) & (spec_retirement_years < (y + 10))])
+            outflow_forecast = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y + 10))])
             
             net_trend_forecast.append(inflow_forecast - outflow_forecast)
 
-        # CHART 3: Experience Structure (Keep General Experience for this)
+        # --- CHART 3: Experience Structure ---
         bins = [0, 10, 20, 30, 40]
         labels = ['Juniors (0-10)', 'Mid (10-20)', 'Senior (20-30)', 'Vet (30+)']
-        exp_groups = pd.cut(spec_df_active['gen_experience'], bins=bins, labels=labels, right=False)
+        exp_groups = pd.cut(unique_active_docs['gen_experience'], bins=bins, labels=labels, right=False)
         exp_counts = exp_groups.value_counts().sort_index().tolist()
         
-        # CHART 4: Density
+        # --- CHART 4: Density ---
         density_x = [density]
         density_y = ['Israel']
         density_colors = ['#3498db']
@@ -290,7 +345,7 @@ def generate_static_site():
 
 <div class="container">
     <h1>🇮🇱 Israel Medical Workforce Analysis</h1>
-    <div class="subtitle">Active Doctors (Under 43 years experience) | Data Source: MoH</div>
+    <div class="subtitle">Active Doctors (Under 43 years experience) | Data Source: MoH Live API</div>
 
     <div class="section-title">🗺️ Global Market Velocity Map</div>
     <div id="chart-velocity" class="chart-box" style="height: 500px;"></div>
@@ -321,13 +376,6 @@ def generate_static_site():
         <div id="chart-trend" class="chart-box chart-full"></div>
         <div id="chart-exp" class="chart-box"></div>
         <div id="chart-dens" class="chart-box"></div>
-    </div>
-
-    <div class="explanation">
-        <strong>🔮 How is the "Projected Forecast" (Dotted Line) calculated?</strong><br>
-        1. <strong>Future Outflow:</strong> We know exactly when current doctors will retire, so we count them.<br>
-        2. <strong>Future Inflow:</strong> We assume the number of new licenses remains similar to the average of the last 5 years.<br>
-        This reveals if the current training pipeline is sufficient to handle the upcoming "Retirement Wave".
     </div>
 </div>
 
@@ -385,12 +433,11 @@ def generate_static_site():
             type: 'bar',
             marker: {{ color: '#3498db' }}
         }}], {{
-            title: 'New Licenses Issued Per Year (1980-{CURRENT_YEAR})',
+            title: 'New Specialty Licenses Per Year',
             margin: {{ t: 40, b: 40, l: 40, r: 20 }},
             xaxis: {{ title: 'Year' }}
         }}, {{responsive: true}});
 
-        // TREND + FORECAST CHART
         const traceHist = {{
             x: d.charts.hist_x,
             y: d.charts.hist_y,
@@ -401,7 +448,7 @@ def generate_static_site():
         }};
         
         const traceFut = {{
-            x: [d.charts.hist_x[d.charts.hist_x.length-1], ...d.charts.fut_x], // Connect lines
+            x: [d.charts.hist_x[d.charts.hist_x.length-1], ...d.charts.fut_x],
             y: [d.charts.hist_y[d.charts.hist_y.length-1], ...d.charts.fut_y],
             name: 'Projected Forecast',
             type: 'scatter',
@@ -410,7 +457,7 @@ def generate_static_site():
         }};
 
         Plotly.newPlot('chart-trend', [traceHist, traceFut], {{
-            title: 'Net Pipeline Health & Forecast (1980-2035)',
+            title: 'Net Pipeline (Inflow vs 45y Retirement)',
             margin: {{ t: 40, b: 40, l: 40, r: 20 }},
             shapes: [{{ type: 'line', x0: 1980, x1: 2035, y0: 0, y1: 0, line: {{ color: 'gray', width: 1, dash: 'dot' }} }}],
             xaxis: {{ title: 'Year', range: [1980, 2035] }},
@@ -446,11 +493,8 @@ def generate_static_site():
         }}
         Plotly.newPlot('chart-dens', [densityTrace], densLayout, {{responsive: true}});
     }}
-
-    // Trigger update for first specialty
-    if (specialties.length > 0) {{
-       updateDashboard();
-    }}
+    
+    if (specialties.length > 0) updateDashboard();
 </script>
 
 </body>
@@ -460,7 +504,7 @@ def generate_static_site():
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html_content)
     
-    print("✅ Success! Forecast & Replacement Ratios added.")
+    print("✅ Success! Dashboard generated using API data.")
 
 if __name__ == "__main__":
     generate_static_site()
