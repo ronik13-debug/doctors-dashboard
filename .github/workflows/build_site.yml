@@ -1,18 +1,19 @@
-name: Update Dashboard
+name: Update and Deploy Dashboard
 
 on:
   push:
     branches:
       - main
   schedule:
-    - cron: '0 0 * * *'  # <-- This runs it every day at midnight UTC
-  workflow_dispatch:      # <-- Allows you to click a button to run it manually
+    # Run every day at 06:00 UTC (08:00 or 09:00 Israel time)
+    - cron: '0 6 * * *'
+  workflow_dispatch: # Allows you to click "Run Now" manually
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -27,10 +28,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install pandas plotly numpy requests
 
-      - name: Generate Dashboard
+      - name: Run Script to Generate HTML
         run: python make_static_site.py
+
+      - name: Check if HTML exists
+        run: ls -l index.html
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
@@ -38,3 +42,5 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./
           keep_files: true
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
