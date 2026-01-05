@@ -9,7 +9,7 @@ import os
 # --- CONFIGURATION ---
 API_RESOURCE_ID = "9c64c522-bbc2-48fe-96fb-3b2a8626f59e"
 ISRAEL_POPULATION = 10_170_000
-RETIREMENT_AGE_EXPERIENCE = 46
+RETIREMENT_AGE_EXPERIENCE = 45
 CURRENT_YEAR = datetime.datetime.now().year
 TIMESTAMP = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
 
@@ -105,34 +105,19 @@ def load_and_clean_data():
 
     df = df.dropna(subset=['gen_year'])
 
-    # --- NORMALIZE SPECIALTIES (NEW LOGIC) ---
+    # --- NORMALIZE SPECIALTIES ---
     if 'specialty_name' not in df.columns: df['specialty_name'] = "Unknown"
     df['specialty_name'] = df['specialty_name'].astype(str).str.strip()
     
     normalization_map = {
-        # 1. ENT Union
         'מחלות אף אוזן וגרון': 'מחלות א.א.ג. וכירורגיית ראש-צוואר',
-        
-        # 2. Cardiac Surgery (Adult)
         'כירורגית בית החזה - מסלול כירורגית לב': 'כירורגית לב',
         'כירורגיה של בית החזה - מסלול לב מבוגרים': 'כירורגית לב',
-        
-        # 3. Pediatric Cardiac Surgery
         'כירורגיה של בית החזה - מסלול לב ילדים': 'כירורגית לב ילדים',
-        
-        # 4. General Thoracic & Heart
         'כירורגית בית החזה - מסלול כירורגית לב וכירורגית חזה כללית': 'כירורגית חזה ולב',
-        
-        # 5. General Thoracic
         'כירורגית בית החזה - מסלול כירורגית חזה כללית': 'כירורגיה של בית החזה',
-        
-        # 6. Child Neurology
         'נוירולוגיית ילדים': 'נוירולוגית ילדים והתפתחות הילד',
-        
-        # 7. Emergency Medicine
         'רפואה דחופה - מסלול מבוגרים': 'רפואה דחופה',
-        
-        # Previous Fixes
         'רפואת משפחה': 'רפואת המשפחה', 
         'אורתופדיה': 'כירורגיה אורתופדית',
         'עיניים': 'מחלות עיניים', 'רפואת עיניים': 'מחלות עיניים',
@@ -141,14 +126,12 @@ def load_and_clean_data():
         'כירורגיה פלסטית': 'כירורגיה פלסטית ואסתטית', 
         'טיפול נמרץ': 'טיפול נמרץ כללי'
     }
-    
     df['specialty_name'] = df['specialty_name'].replace(normalization_map)
 
     # CALCULATE EXPERIENCE
     df['gen_experience'] = CURRENT_YEAR - df['gen_year']
     df['spec_experience'] = CURRENT_YEAR - df['spec_year']
     df['spec_experience'] = df['spec_experience'].fillna(df['gen_experience']) 
-
     df['retirement_year_spec'] = df['spec_year'].fillna(df['gen_year']) + RETIREMENT_AGE_EXPERIENCE
 
     return df
@@ -172,8 +155,14 @@ def generate_static_site():
         total_active = spec_df_active['license_num'].nunique()
         if total_active < 30: continue 
 
+        # --- UNIQUE DOCTORS (Deduplicated) ---
         unique_active_docs = spec_df_active.drop_duplicates(subset='license_num')
-        
+        spec_df_all_unique = spec_df_all.drop_duplicates(subset='license_num')
+
+        # --- METRIC: Over 45 Years (General License) ---
+        count_over_45 = len(spec_df_all_unique[spec_df_all_unique['gen_experience'] > 45])
+
+        # KPI: Replacement Ratio
         juniors_count = len(unique_active_docs[unique_active_docs['gen_experience'] <= 10])
         veterans_count = len(unique_active_docs[unique_active_docs['gen_experience'] >= 30])
         replacement_ratio = round(juniors_count / veterans_count, 2) if veterans_count > 0 else 99.9
@@ -198,9 +187,7 @@ def generate_static_site():
         global_velocity_data.append({'x': total_active, 'y': velocity, 'name': spec, 'color': usa_color})
 
         # CHART 1: New Licenses
-        spec_df_all_unique = spec_df_all.drop_duplicates(subset='license_num')
         spec_start_years = spec_df_all_unique['spec_year'].dropna().astype(int)
-        
         joins_per_year = spec_start_years.value_counts().sort_index()
         years_idx = list(range(1980, CURRENT_YEAR + 1))
         joins_counts = [int(joins_per_year.get(y, 0)) for y in years_idx]
@@ -213,7 +200,6 @@ def generate_static_site():
         history_years = list(range(1980, CURRENT_YEAR + 1))
         future_years = list(range(CURRENT_YEAR + 1, 2036))
         net_trend_history, net_trend_forecast = [], []
-        
         spec_retire_years = spec_df_all_unique['retirement_year_spec'].dropna().astype(int)
 
         for y in history_years:
@@ -229,9 +215,10 @@ def generate_static_site():
             outflow = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y + 10))])
             net_trend_forecast.append((count_real + count_proj) - outflow)
 
-        # CHART 3: Pie
-        bins = [0, 10, 25]
-        labels = ['Juniors (0-10y)', 'Mid (10-25y)', 'Seniors (25-40y)']
+        # CHART 3: Pie (Specialty Experience)
+        # UPDATED BINS: 0-10, 10-25, 25-45, 45+
+        bins = [0, 10, 25, 45, 120]
+        labels = ['Juniors (0-10y)', 'Mid (10-25y)', 'Seniors (25-45y)', 'Veterans (45y+)']
         exp_groups = pd.cut(unique_active_docs['spec_experience'], bins=bins, labels=labels, right=False)
         exp_counts = exp_groups.value_counts().sort_index()
         pie_labels = exp_counts.index.tolist()
@@ -253,6 +240,7 @@ def generate_static_site():
             "usa_color": usa_color,
             "ratio_val": replacement_ratio,
             "ratio_color": ratio_color,
+            "count_over_45": int(count_over_45),
             "charts": {
                 "years_x": years_idx, 
                 "years_y": joins_counts,
@@ -331,7 +319,10 @@ def generate_static_site():
     <div class="charts-grid">
         <div id="chart-joins" class="chart-box chart-full"></div>
         <div id="chart-trend" class="chart-box chart-full"></div>
-        <div id="chart-exp" class="chart-box"></div>
+        <div class="chart-col">
+            <div id="chart-exp" class="chart-box" style="height: 350px;"></div>
+            <div id="chart-over45" class="chart-box" style="height: 150px; margin-top: 10px;"></div>
+        </div>
         <div id="chart-dens" class="chart-box"></div>
     </div>
     
@@ -434,8 +425,23 @@ def generate_static_site():
         }}];
         
         Plotly.newPlot('chart-exp', pieData, {{
-            title: 'Experience Structure (Specialty Date based)',
+            title: 'Experience (Specialty Date)',
             margin: {{ t: 40, b: 40, l: 40, r: 40 }}
+        }}, {{responsive: true}});
+
+        // OVER 45 CHART (Horizontal)
+        Plotly.newPlot('chart-over45', [{{
+            x: [d.count_over_45],
+            y: ['Doctors'],
+            type: 'bar',
+            orientation: 'h',
+            marker: {{ color: '#95a5a6' }},
+            text: [d.count_over_45],
+            textposition: 'auto'
+        }}], {{
+            title: 'Doctors Over 45 Years (Gen License)',
+            margin: {{ t: 30, b: 30, l: 60, r: 20 }},
+            xaxis: {{ visible: false }}
         }}, {{responsive: true}});
 
         const densityTrace = {{
@@ -468,7 +474,7 @@ def generate_static_site():
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html_content)
     
-    print("✅ Success! Dashboard generated.")
+    print("✅ Success! Dashboard updated with 10-25/25-45 bins.")
 
 if __name__ == "__main__":
     generate_static_site()
