@@ -44,11 +44,9 @@ def parse_custom_date(date_str):
         s = "0" + s
         
     if len(s) != 8:
-        # If unexpected length, try standard pandas parsing or fail
         return pd.to_datetime(s, errors='coerce')
 
     try:
-        # Format ddmmyyyy
         day = int(s[0:2])
         month = int(s[2:4])
         year = int(s[4:8])
@@ -59,9 +57,9 @@ def parse_custom_date(date_str):
 def load_and_clean_data():
     print("⏳ Connecting to data.gov.il API...")
     
-    # 1. FETCH DATA (Pagination loop to get ALL records)
+    # 1. FETCH DATA
     api_url = "https://data.gov.il/api/3/action/datastore_search"
-    limit = 32000 # Max allowed per request usually
+    limit = 32000 
     offset = 0
     all_records = []
     
@@ -77,7 +75,6 @@ def load_and_clean_data():
             data = r.json()
             
             if not data.get('success'): break
-            
             records = data['result']['records']
             if not records: break
             
@@ -85,7 +82,6 @@ def load_and_clean_data():
             offset += limit
             print(f"   Fetched {len(all_records)} rows...", end='\r')
             
-            # Safety break
             if len(records) < limit: break
             
         except Exception as e:
@@ -94,46 +90,47 @@ def load_and_clean_data():
 
     df = pd.DataFrame(all_records)
     print(f"\n✅ Total Raw Records: {len(df)}")
-
-    # 2. RENAME COLUMNS (Based on your description + Hebrew Keys)
-    # Hebrew keys usually returned by this API:
-    # 'שם פרטי', 'שם משפחה', 'תאריך רישיון', 'שם התמחות', 'תאריך רישום התמחות'
     
+    # DEBUG: Print columns to see exactly what we got
+    # print("Columns found:", df.columns.tolist())
+
+    # 2. RENAME COLUMNS (Updated with 'תאריך רישום רישיון')
     col_map = {
         'שם פרטי': 'first_name',
         'שם משפחה': 'last_name',
         'מספר רישיון': 'license_num',
-        'תאריך רישיון': 'license_date_raw', # Col B
-        'שם התמחות': 'specialty_name',      # The duplicate field
-        'תאריך רישום התמחות': 'spec_date_raw' # Col D/F equivalent
+        'תאריך רישום רישיון': 'license_date_raw',  # <--- FIXED KEY NAME
+        'תאריך רישיון': 'license_date_raw',        # Backup key
+        'שם התמחות': 'specialty_name',
+        'תאריך רישום התמחות': 'spec_date_raw'
     }
     
-    # Apply mapping (ignore columns that don't match)
     df = df.rename(columns=col_map)
     
+    # Check if critical column exists now
+    if 'license_date_raw' not in df.columns:
+        print("❌ Error: Could not find license date column. Available columns:")
+        print(df.columns.tolist())
+        return None
+
     # 3. CONSTRUCT NAME
     df['first_name'] = df['first_name'].astype(str).str.strip()
     df['last_name'] = df['last_name'].astype(str).str.strip()
     df['Name'] = df['first_name'] + " " + df['last_name']
 
-    # 4. PARSE DATES (Custom Logic for ddmmyyyy)
+    # 4. PARSE DATES
     print("⏳ Parsing dates (ddmmyyyy)...")
-    
-    # A. General License Date (Col B)
     df['gen_date'] = df['license_date_raw'].apply(parse_custom_date)
     
-    # B. Specialty Date (Col D/F)
-    df['spec_date'] = df['spec_date_raw'].apply(parse_custom_date)
-    
-    # Fallback: If specialty date is missing, use general date (optional, strictly speaking we should ignore)
-    # df['spec_date'] = df['spec_date'].fillna(df['gen_date'])
+    if 'spec_date_raw' in df.columns:
+        df['spec_date'] = df['spec_date_raw'].apply(parse_custom_date)
+    else:
+        df['spec_date'] = pd.NaT
 
-    # Drop rows with no valid General Date (cannot calculate retirement)
     df = df.dropna(subset=['gen_date'])
 
     # 5. NORMALIZE SPECIALTY NAMES
     if 'specialty_name' not in df.columns:
-        print("⚠️ Warning: 'specialty_name' column not found in API data.")
         df['specialty_name'] = "Unknown"
 
     df['specialty_name'] = df['specialty_name'].astype(str).str.strip()
@@ -158,8 +155,6 @@ def load_and_clean_data():
     df['spec_year'] = df['spec_date'].dt.year
     df['gen_experience'] = CURRENT_YEAR - df['gen_year']
     
-    # Calculate Specialty-Specific Retirement Year (Spec Date + 45)
-    # If spec date missing, fallback to Gen Date + 45
     df['retirement_year_spec'] = df['spec_year'].fillna(df['gen_year']) + RETIREMENT_AGE_EXPERIENCE
 
     return df
@@ -168,10 +163,10 @@ def generate_static_site():
     df = load_and_clean_data()
     if df is None: return
 
-    # Identify Active Doctors (by General License)
-    # Note: We filter duplicates later for "Total Active"
-    active_df = df[df['gen_experience'] <= RETIREMENT_AGE_EXPERIENCE].copy()
+    # Identify Active Doctors (Deduplicate for total count)
+    active_df_rows = df[df['gen_experience'] <= RETIREMENT_AGE_EXPERIENCE].copy()
     
+    # For dropdown list
     unique_specialties = sorted([s for s in df['specialty_name'].unique() if s.lower() not in ['nan', 'none', '', 'unknown']])
     
     dashboard_data = {}
@@ -180,18 +175,16 @@ def generate_static_site():
     print("⏳ Processing specialties...")
     
     for spec in unique_specialties:
-        # FILTER: Just rows for this specialty
+        # Filter for this specialty
         spec_df_all = df[df['specialty_name'] == spec]
-        spec_df_active = active_df[active_df['specialty_name'] == spec]
+        spec_df_active = active_df_rows[active_df_rows['specialty_name'] == spec]
         
-        # Count ACTIVE doctors (Unique IDs for this specialty)
+        # Count unique doctors in this specialty
         total_active = spec_df_active['license_num'].nunique()
         
         if total_active < 30: continue 
 
-        # --- KPI: Replacement Ratio ---
-        # Based on General Experience (Biological Age)
-        # We deduplicate by license_num to avoid counting same doc twice if they have duplicate rows for same spec
+        # Deduplicate active docs for KPI calculations
         unique_active_docs = spec_df_active.drop_duplicates(subset='license_num')
         
         juniors_count = len(unique_active_docs[unique_active_docs['gen_experience'] <= 10])
@@ -206,12 +199,10 @@ def generate_static_site():
         if replacement_ratio > 1.2: ratio_color = "#2ecc71"
         if replacement_ratio < 0.8: ratio_color = "#e74c3c"
 
-        # --- KPI: Velocity & Net ---
         velocity = (juniors_count / total_active) * 100
         outflow_now = len(unique_active_docs[unique_active_docs['gen_experience'] >= (RETIREMENT_AGE_EXPERIENCE - 10)])
         net_now = juniors_count - outflow_now
         
-        # --- KPI: Density ---
         density = (total_active / ISRAEL_POPULATION) * 1000
         usa_bench = AAMC_USA_BENCHMARKS.get(spec, None)
         usa_text = "No Benchmark"
@@ -234,21 +225,17 @@ def generate_static_site():
             'color': usa_color
         })
 
-        # --- CHART 1: New Licenses (Inflow) ---
-        # Uses Specialty Date (Col D/F equiv)
+        # --- CHARTS ---
         spec_start_years = spec_df_all['spec_year'].dropna()
         joins_per_year = spec_start_years.value_counts().sort_index()
         
         years_idx = list(range(1980, CURRENT_YEAR + 1))
         joins_counts = [int(joins_per_year.get(y, 0)) for y in years_idx]
 
-        # Forecast Avg
         recent_years = range(CURRENT_YEAR - 5, CURRENT_YEAR)
         recent_inflow_sum = sum([joins_per_year.get(y, 0) for y in recent_years])
         avg_inflow = max(1, int(recent_inflow_sum / 5))
 
-        # --- CHART 2: Net Pipeline ---
-        # Uses Specialty Date for Inflow, Specialty Date + 45 for Outflow
         history_years = list(range(1980, CURRENT_YEAR + 1))
         future_years = list(range(CURRENT_YEAR + 1, 2036))
         
@@ -274,13 +261,11 @@ def generate_static_site():
             
             net_trend_forecast.append(inflow_forecast - outflow_forecast)
 
-        # --- CHART 3: Experience Structure ---
         bins = [0, 10, 20, 30, 40]
         labels = ['Juniors (0-10)', 'Mid (10-20)', 'Senior (20-30)', 'Vet (30+)']
         exp_groups = pd.cut(unique_active_docs['gen_experience'], bins=bins, labels=labels, right=False)
         exp_counts = exp_groups.value_counts().sort_index().tolist()
         
-        # --- CHART 4: Density ---
         density_x = [density]
         density_y = ['Israel']
         density_colors = ['#3498db']
