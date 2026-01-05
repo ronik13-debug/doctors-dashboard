@@ -290,7 +290,7 @@ def generate_static_site():
 
 <div class="container">
     <h1>🇮🇱 Israel Medical Workforce Analysis</h1>
-    <div class="subtitle">Active Doctors (Under 43 years experience) | Data Source: MoH Live API</div>
+    <div class="subtitle">Active Doctors (Under 45 years experience) | Data Source: MoH Live API</div>
 
     <div class="section-title">🗺️ Global Market Velocity Map</div>
     <div id="chart-velocity" class="chart-box" style="height: 500px;"></div>
@@ -435,7 +435,8 @@ def generate_static_site():
             y: ['Doctors'],
             type: 'bar',
             orientation: 'h',
-            marker: {{ color: '#95a5a6' }},
+            marker: {{ color: 'red' }},
+            width: 0.3,
             text: [d.count_over_45],
             textposition: 'auto'
         }}], {{
@@ -478,5 +479,6 @@ def generate_static_site():
 
 if __name__ == "__main__":
     generate_static_site()
+
 
 
