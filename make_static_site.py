@@ -144,9 +144,7 @@ def load_and_clean_data():
     df['spec_year'] = df['spec_date'].dt.year
     df['spec_experience'] = CURRENT_YEAR - df['spec_year']
     
-    # Fallback: If specialty date is missing, use General Date.
-    # IMPORTANT: This ensures the doctor appears in the dashboard even if 'spec_date' is empty,
-    # but the charts relying specifically on 'spec_date' might treat them as older/newer based on license.
+    # Fallback to General Experience only if Spec Date is missing
     df['spec_experience'] = df['spec_experience'].fillna(df['gen_experience']) 
 
     df['retirement_year_spec'] = df['spec_year'].fillna(df['gen_year']) + RETIREMENT_AGE_EXPERIENCE
@@ -167,15 +165,19 @@ def generate_static_site():
     print("⏳ Generating Dashboard...")
     
     for spec in unique_specialties:
+        # Full history for this specialty
         spec_df_all = df[df['specialty_name'] == spec]
+        # Active snapshot for this specialty
         spec_df_active = active_df_rows[active_df_rows['specialty_name'] == spec]
         
+        # Count UNIQUE doctors (Total Active)
         total_active = spec_df_active['license_num'].nunique()
         if total_active < 30: continue 
 
+        # Create unique docs list for KPIs (deduplicated)
         unique_active_docs = spec_df_active.drop_duplicates(subset='license_num')
         
-        # Replacement Ratio (Biological Age based)
+        # KPIs
         juniors_count = len(unique_active_docs[unique_active_docs['gen_experience'] <= 10])
         veterans_count = len(unique_active_docs[unique_active_docs['gen_experience'] >= 30])
         replacement_ratio = round(juniors_count / veterans_count, 2) if veterans_count > 0 else 99.9
@@ -199,8 +201,12 @@ def generate_static_site():
 
         global_velocity_data.append({'x': total_active, 'y': velocity, 'name': spec, 'color': usa_color})
 
-        # --- CHART 1: New Licenses (Using Specialty Date) ---
-        spec_start_years = spec_df_all['spec_year'].dropna()
+        # --- PREPARE CHART DATA (With Deduplication!) ---
+        # Ensure we don't count the same doctor twice if they appear in the API twice for the same spec
+        spec_df_all_unique = spec_df_all.drop_duplicates(subset='license_num')
+        
+        # CHART 1: New Licenses (Using Specialty Date)
+        spec_start_years = spec_df_all_unique['spec_year'].dropna()
         joins_per_year = spec_start_years.value_counts().sort_index()
         years_idx = list(range(1980, CURRENT_YEAR + 1))
         joins_counts = [int(joins_per_year.get(y, 0)) for y in years_idx]
@@ -210,11 +216,11 @@ def generate_static_site():
         recent_inflow_sum = sum([joins_per_year.get(y, 0) for y in recent_years])
         avg_inflow = max(1, int(recent_inflow_sum / 5))
 
-        # --- CHART 2: Net Pipeline (Inflow vs Outflow) ---
+        # CHART 2: Net Pipeline (Inflow vs Outflow)
         history_years = list(range(1980, CURRENT_YEAR + 1))
         future_years = list(range(CURRENT_YEAR + 1, 2036))
         net_trend_history, net_trend_forecast = [], []
-        spec_retire_years = spec_df_all['retirement_year_spec'].dropna()
+        spec_retire_years = spec_df_all_unique['retirement_year_spec'].dropna()
 
         for y in history_years:
             inflow = len(spec_start_years[(spec_start_years > (y - 10)) & (spec_start_years <= y)])
@@ -229,19 +235,15 @@ def generate_static_site():
             outflow = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y + 10))])
             net_trend_forecast.append((count_real + count_proj) - outflow)
 
-        # --- CHART 3: Experience Structure (PIE CHART) ---
-        # Bins: 0-10, 10-20, 20-45, 45+
+        # CHART 3: Experience Structure (Pie)
         bins = [0, 10, 20, 45, 120]
         labels = ['Juniors (0-10y)', 'Mid (10-20y)', 'Seniors (20-45y)', 'Veterans (45y+)']
-        
-        # Using 'spec_experience' (Specialty Date based)
         exp_groups = pd.cut(unique_active_docs['spec_experience'], bins=bins, labels=labels, right=False)
         exp_counts = exp_groups.value_counts().sort_index()
-        
         pie_labels = exp_counts.index.tolist()
         pie_values = exp_counts.values.tolist()
         
-        # --- CHART 4: Density ---
+        # CHART 4: Density
         density_x = [density]
         density_y = ['Israel']
         density_colors = ['#3498db']
