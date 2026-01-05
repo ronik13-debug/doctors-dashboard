@@ -31,21 +31,11 @@ AAMC_USA_BENCHMARKS = {
 }
 
 def parse_custom_date(date_str):
-    """
-    Parses dates in formats: ddmmyyyy, ddmyyyy, etc. (No separators)
-    """
     if pd.isna(date_str) or str(date_str).strip() == "":
         return pd.NaT
-    
     s = str(date_str).strip()
-    
-    # Pad with leading zero if only 7 digits (e.g., 1041992 -> 01041992)
-    if len(s) == 7:
-        s = "0" + s
-        
-    if len(s) != 8:
-        return pd.to_datetime(s, errors='coerce')
-
+    if len(s) == 7: s = "0" + s
+    if len(s) != 8: return pd.to_datetime(s, errors='coerce')
     try:
         day = int(s[0:2])
         month = int(s[2:4])
@@ -56,34 +46,24 @@ def parse_custom_date(date_str):
 
 def load_and_clean_data():
     print("⏳ Connecting to data.gov.il API...")
-    
-    # 1. FETCH DATA
     api_url = "https://data.gov.il/api/3/action/datastore_search"
     limit = 32000 
     offset = 0
     all_records = []
     
     while True:
-        params = {
-            "resource_id": API_RESOURCE_ID,
-            "limit": limit,
-            "offset": offset
-        }
+        params = {"resource_id": API_RESOURCE_ID, "limit": limit, "offset": offset}
         try:
             r = requests.get(api_url, params=params, timeout=45)
             r.raise_for_status()
             data = r.json()
-            
             if not data.get('success'): break
             records = data['result']['records']
             if not records: break
-            
             all_records.extend(records)
             offset += limit
             print(f"   Fetched {len(all_records)} rows...", end='\r')
-            
             if len(records) < limit: break
-            
         except Exception as e:
             print(f"\n❌ Error fetching API: {e}")
             return None
@@ -91,49 +71,29 @@ def load_and_clean_data():
     df = pd.DataFrame(all_records)
     print(f"\n✅ Total Raw Records: {len(df)}")
     
-    # DEBUG: Print columns to help us if it crashes again
-    # print("Raw API Columns:", df.columns.tolist())
-
-    # 2. RENAME COLUMNS (Robust Mapping)
     col_map = {
-        'שם פרטי': 'first_name',
-        'שם משפחה': 'last_name',
-        
-        # License Number Variations (Hebrew/English/Typos)
-        'מספר רישיון': 'license_num',
-        'מספר רשיון': 'license_num', 
-        'mispar_rishyon': 'license_num',
-        
-        # Date Variations
-        'תאריך רישום רישיון': 'license_date_raw',
-        'תאריך רישיון': 'license_date_raw',
-        
-        # Specialty Variations
-        'שם התמחות': 'specialty_name',
-        'תאור מומחיות': 'specialty_name',
-        
+        'שם פרטי': 'first_name', 'שם משפחה': 'last_name',
+        'מספר רישיון': 'license_num', 'מספר רשיון': 'license_num', 'mispar_rishyon': 'license_num',
+        'תאריך רישום רישיון': 'license_date_raw', 'תאריך רישיון': 'license_date_raw',
+        'שם התמחות': 'specialty_name', 'תאור מומחיות': 'specialty_name',
         'תאריך רישום התמחות': 'spec_date_raw'
     }
-    
     df = df.rename(columns=col_map)
     
-    # 3. CONSTRUCT NAME
-    if 'first_name' in df.columns and 'last_name' in df.columns:
+    # Clean Names
+    if 'first_name' in df.columns:
         df['first_name'] = df['first_name'].astype(str).str.strip()
         df['last_name'] = df['last_name'].astype(str).str.strip()
         df['Name'] = df['first_name'] + " " + df['last_name']
     else:
         df['Name'] = "Unknown"
 
-    # --- CRITICAL FIX: Ensure 'license_num' exists ---
+    # Fix missing ID
     if 'license_num' not in df.columns:
-        print(f"⚠️ Warning: 'license_num' column missing. Available: {df.columns.tolist()}")
-        print("   -> Creating Pseudo-ID using Name + Date to prevent crash.")
-        # Fallback: Create ID from Name + Date to count "unique" doctors
         df['license_num'] = df['Name'] + "_" + df['license_date_raw'].astype(str)
 
-    # 4. PARSE DATES
-    print("⏳ Parsing dates (ddmmyyyy)...")
+    # Parse Dates
+    print("⏳ Parsing dates...")
     if 'license_date_raw' in df.columns:
         df['gen_date'] = df['license_date_raw'].apply(parse_custom_date)
     else:
@@ -147,18 +107,13 @@ def load_and_clean_data():
 
     df = df.dropna(subset=['gen_date'])
 
-    # 5. NORMALIZE SPECIALTY NAMES
-    if 'specialty_name' not in df.columns:
-        df['specialty_name'] = "Unknown"
-
+    # Normalize Specialties
+    if 'specialty_name' not in df.columns: df['specialty_name'] = "Unknown"
     df['specialty_name'] = df['specialty_name'].astype(str).str.strip()
-
+    
     ent_target = 'מחלות אף אוזן וגרון'
-    ent_source = 'מחלות א.א.ג. וכירורגיית ראש-צוואר'
-    df.loc[df['specialty_name'] == ent_source, 'specialty_name'] = ent_target
-
-    thoracic_target = 'כירורגיה חזה ולב'
-    df.loc[df['specialty_name'].str.contains('חזה|לב', regex=True), 'specialty_name'] = thoracic_target
+    df.loc[df['specialty_name'] == 'מחלות א.א.ג. וכירורגיית ראש-צוואר', 'specialty_name'] = ent_target
+    df.loc[df['specialty_name'].str.contains('חזה|לב', regex=True), 'specialty_name'] = 'כירורגיה חזה ולב'
 
     normalization_map = {
         'רפואת משפחה': 'רפואת המשפחה', 'אורתופדיה': 'כירורגיה אורתופדית',
@@ -168,11 +123,17 @@ def load_and_clean_data():
     }
     df['specialty_name'] = df['specialty_name'].replace(normalization_map)
 
-    # 6. CALCULATE EXPERIENCE
+    # Calculate Experience
     df['gen_year'] = df['gen_date'].dt.year
     df['spec_year'] = df['spec_date'].dt.year
     df['gen_experience'] = CURRENT_YEAR - df['gen_year']
     
+    # Calculate SPECIALTY EXPERIENCE (Current Year - Specialty Date)
+    # We fill NaTs with General Experience just in case, to avoid errors, 
+    # but preferably we use the real specialty date.
+    df['spec_experience'] = CURRENT_YEAR - df['spec_year']
+    df['spec_experience'] = df['spec_experience'].fillna(df['gen_experience']) 
+
     df['retirement_year_spec'] = df['spec_year'].fillna(df['gen_year']) + RETIREMENT_AGE_EXPERIENCE
 
     return df
@@ -181,7 +142,7 @@ def generate_static_site():
     df = load_and_clean_data()
     if df is None: return
 
-    # Identify Active Doctors (Deduplicate for total count)
+    # Filter Active Doctors (based on General License < 45 years)
     active_df_rows = df[df['gen_experience'] <= RETIREMENT_AGE_EXPERIENCE].copy()
     
     unique_specialties = sorted([s for s in df['specialty_name'].unique() if s.lower() not in ['nan', 'none', '', 'unknown']])
@@ -192,26 +153,19 @@ def generate_static_site():
     print("⏳ Processing specialties...")
     
     for spec in unique_specialties:
-        # Filter for this specialty
         spec_df_all = df[df['specialty_name'] == spec]
         spec_df_active = active_df_rows[active_df_rows['specialty_name'] == spec]
         
-        # Count unique doctors in this specialty
         total_active = spec_df_active['license_num'].nunique()
-        
         if total_active < 30: continue 
 
-        # Deduplicate active docs for KPI calculations
         unique_active_docs = spec_df_active.drop_duplicates(subset='license_num')
         
+        # KPI: Replacement Ratio (Biological Age based)
         juniors_count = len(unique_active_docs[unique_active_docs['gen_experience'] <= 10])
         veterans_count = len(unique_active_docs[unique_active_docs['gen_experience'] >= 30])
         
-        if veterans_count > 0:
-            replacement_ratio = round(juniors_count / veterans_count, 2)
-        else:
-            replacement_ratio = 99.9
-        
+        replacement_ratio = round(juniors_count / veterans_count, 2) if veterans_count > 0 else 99.9
         ratio_color = "#f1c40f"
         if replacement_ratio > 1.2: ratio_color = "#2ecc71"
         if replacement_ratio < 0.8: ratio_color = "#e74c3c"
@@ -222,30 +176,19 @@ def generate_static_site():
         
         density = (total_active / ISRAEL_POPULATION) * 1000
         usa_bench = AAMC_USA_BENCHMARKS.get(spec, None)
-        usa_text = "No Benchmark"
-        usa_color = "gray"
+        usa_text, usa_color = "No Benchmark", "gray"
         
         if usa_bench:
             gap = density - usa_bench
             gap_docs = int(gap * (ISRAEL_POPULATION / 1000))
-            if gap < 0:
-                usa_text = f"Deficit: {gap_docs}"
-                usa_color = "#e74c3c"
-            else:
-                usa_text = f"Surplus: +{gap_docs}"
-                usa_color = "#2ecc71"
+            if gap < 0: usa_text, usa_color = f"Deficit: {gap_docs}", "#e74c3c"
+            else: usa_text, usa_color = f"Surplus: +{gap_docs}", "#2ecc71"
 
-        global_velocity_data.append({
-            'x': total_active,
-            'y': velocity,
-            'name': spec,
-            'color': usa_color
-        })
+        global_velocity_data.append({'x': total_active, 'y': velocity, 'name': spec, 'color': usa_color})
 
-        # --- CHARTS ---
+        # Charts Logic
         spec_start_years = spec_df_all['spec_year'].dropna()
         joins_per_year = spec_start_years.value_counts().sort_index()
-        
         years_idx = list(range(1980, CURRENT_YEAR + 1))
         joins_counts = [int(joins_per_year.get(y, 0)) for y in years_idx]
 
@@ -255,34 +198,37 @@ def generate_static_site():
 
         history_years = list(range(1980, CURRENT_YEAR + 1))
         future_years = list(range(CURRENT_YEAR + 1, 2036))
-        
-        net_trend_history = []
-        net_trend_forecast = []
-        
+        net_trend_history, net_trend_forecast = [], []
         spec_retire_years = spec_df_all['retirement_year_spec'].dropna()
 
         for y in history_years:
-            inflow_y = len(spec_start_years[(spec_start_years > (y - 10)) & (spec_start_years <= y)])
-            outflow_y = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y + 10))])
-            net_trend_history.append(inflow_y - outflow_y)
+            inflow = len(spec_start_years[(spec_start_years > (y - 10)) & (spec_start_years <= y)])
+            outflow = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y + 10))])
+            net_trend_history.append(inflow - outflow)
 
         for y in future_years:
             real_part = range(y - 10, CURRENT_YEAR + 1)
             proj_part = range(max(y - 10, CURRENT_YEAR + 1), y + 1)
-            
             count_real = len(spec_start_years[spec_start_years.isin(real_part)])
             count_proj = len(proj_part) * avg_inflow
-            
-            inflow_forecast = count_real + count_proj
-            outflow_forecast = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y + 10))])
-            
-            net_trend_forecast.append(inflow_forecast - outflow_forecast)
+            outflow = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y + 10))])
+            net_trend_forecast.append((count_real + count_proj) - outflow)
 
-        bins = [0, 10, 20, 30, 40]
-        labels = ['Juniors (0-10)', 'Mid (10-20)', 'Senior (20-30)', 'Vet (30+)']
-        exp_groups = pd.cut(unique_active_docs['gen_experience'], bins=bins, labels=labels, right=False)
-        exp_counts = exp_groups.value_counts().sort_index().tolist()
+        # --- CHART 3: Experience Structure (PIE CHART) ---
+        # Using 'spec_experience' (Specialty Date)
+        # Bins: 0-10, 10-20, 20-45, 45+
+        bins = [0, 10, 20, 45, 100]
+        labels = ['Juniors (0-10)', 'Mid (10-20)', 'Seniors (20-45)', 'Veterans (45+)']
         
+        # We use cut on spec_experience
+        exp_groups = pd.cut(unique_active_docs['spec_experience'], bins=bins, labels=labels, right=False)
+        exp_counts = exp_groups.value_counts().sort_index()
+        
+        # Prepare Data for Pie Chart
+        pie_labels = exp_counts.index.tolist()
+        pie_values = exp_counts.values.tolist()
+        
+        # --- CHART 4: Density ---
         density_x = [density]
         density_y = ['Israel']
         density_colors = ['#3498db']
@@ -301,8 +247,9 @@ def generate_static_site():
             "charts": {
                 "years_x": years_idx, 
                 "years_y": joins_counts,
-                "exp_x": labels,
-                "exp_y": exp_counts,
+                # Pie Chart Data
+                "pie_labels": pie_labels,
+                "pie_values": pie_values,
                 "hist_x": history_years,
                 "hist_y": net_trend_history,
                 "fut_x": future_years,
@@ -340,7 +287,6 @@ def generate_static_site():
         .charts-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; }}
         .chart-box {{ background: white; padding: 10px; border-radius: 8px; border: 1px solid #eee; min-height: 350px; }}
         .chart-full {{ grid-column: 1 / -1; }}
-        .explanation {{ background: #fef9e7; padding: 15px; margin-top: 20px; border-left: 5px solid #f1c40f; font-size: 0.9em; color: #7f8c8d; }}
     </style>
 </head>
 <body>
@@ -466,14 +412,19 @@ def generate_static_site():
             yaxis: {{ title: 'Net Balance (In - Out)' }}
         }}, {{responsive: true}});
 
-        Plotly.newPlot('chart-exp', [{{
-            x: d.charts.exp_x,
-            y: d.charts.exp_y,
-            type: 'bar',
-            marker: {{ color: ['#2ecc71', '#3498db', '#3498db', '#e74c3c'] }}
-        }}], {{
-            title: 'Experience Structure (Active Doctors)',
-            margin: {{ t: 40, b: 40, l: 40, r: 20 }}
+        // PIE CHART
+        var pieData = [{{
+            values: d.charts.pie_values,
+            labels: d.charts.pie_labels,
+            type: 'pie',
+            marker: {{ colors: ['#2ecc71', '#3498db', '#f1c40f', '#e74c3c'] }},
+            textinfo: 'label+percent',
+            hoverinfo: 'label+value'
+        }}];
+        
+        Plotly.newPlot('chart-exp', pieData, {{
+            title: 'Experience Structure (Based on Specialty Date)',
+            margin: {{ t: 40, b: 40, l: 40, r: 40 }}
         }}, {{responsive: true}});
 
         const densityTrace = {{
@@ -506,7 +457,7 @@ def generate_static_site():
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html_content)
     
-    print("✅ Success! Dashboard generated using API data.")
+    print("✅ Success! Dashboard updated with Pie Chart.")
 
 if __name__ == "__main__":
     generate_static_site()
