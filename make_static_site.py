@@ -91,36 +91,54 @@ def load_and_clean_data():
     df = pd.DataFrame(all_records)
     print(f"\n✅ Total Raw Records: {len(df)}")
     
-    # DEBUG: Print columns to see exactly what we got
-    # print("Columns found:", df.columns.tolist())
+    # DEBUG: Print columns to help us if it crashes again
+    # print("Raw API Columns:", df.columns.tolist())
 
-    # 2. RENAME COLUMNS (Updated with 'תאריך רישום רישיון')
+    # 2. RENAME COLUMNS (Robust Mapping)
     col_map = {
         'שם פרטי': 'first_name',
         'שם משפחה': 'last_name',
+        
+        # License Number Variations (Hebrew/English/Typos)
         'מספר רישיון': 'license_num',
-        'תאריך רישום רישיון': 'license_date_raw',  # <--- FIXED KEY NAME
-        'תאריך רישיון': 'license_date_raw',        # Backup key
+        'מספר רשיון': 'license_num', 
+        'mispar_rishyon': 'license_num',
+        
+        # Date Variations
+        'תאריך רישום רישיון': 'license_date_raw',
+        'תאריך רישיון': 'license_date_raw',
+        
+        # Specialty Variations
         'שם התמחות': 'specialty_name',
+        'תאור מומחיות': 'specialty_name',
+        
         'תאריך רישום התמחות': 'spec_date_raw'
     }
     
     df = df.rename(columns=col_map)
     
-    # Check if critical column exists now
-    if 'license_date_raw' not in df.columns:
-        print("❌ Error: Could not find license date column. Available columns:")
-        print(df.columns.tolist())
-        return None
-
     # 3. CONSTRUCT NAME
-    df['first_name'] = df['first_name'].astype(str).str.strip()
-    df['last_name'] = df['last_name'].astype(str).str.strip()
-    df['Name'] = df['first_name'] + " " + df['last_name']
+    if 'first_name' in df.columns and 'last_name' in df.columns:
+        df['first_name'] = df['first_name'].astype(str).str.strip()
+        df['last_name'] = df['last_name'].astype(str).str.strip()
+        df['Name'] = df['first_name'] + " " + df['last_name']
+    else:
+        df['Name'] = "Unknown"
+
+    # --- CRITICAL FIX: Ensure 'license_num' exists ---
+    if 'license_num' not in df.columns:
+        print(f"⚠️ Warning: 'license_num' column missing. Available: {df.columns.tolist()}")
+        print("   -> Creating Pseudo-ID using Name + Date to prevent crash.")
+        # Fallback: Create ID from Name + Date to count "unique" doctors
+        df['license_num'] = df['Name'] + "_" + df['license_date_raw'].astype(str)
 
     # 4. PARSE DATES
     print("⏳ Parsing dates (ddmmyyyy)...")
-    df['gen_date'] = df['license_date_raw'].apply(parse_custom_date)
+    if 'license_date_raw' in df.columns:
+        df['gen_date'] = df['license_date_raw'].apply(parse_custom_date)
+    else:
+        print("❌ Critical: No license date column found.")
+        return None
     
     if 'spec_date_raw' in df.columns:
         df['spec_date'] = df['spec_date_raw'].apply(parse_custom_date)
@@ -166,7 +184,6 @@ def generate_static_site():
     # Identify Active Doctors (Deduplicate for total count)
     active_df_rows = df[df['gen_experience'] <= RETIREMENT_AGE_EXPERIENCE].copy()
     
-    # For dropdown list
     unique_specialties = sorted([s for s in df['specialty_name'].unique() if s.lower() not in ['nan', 'none', '', 'unknown']])
     
     dashboard_data = {}
