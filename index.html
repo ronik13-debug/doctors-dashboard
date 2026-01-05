@@ -28,7 +28,7 @@
 
 <div class="container">
     <h1>🇮🇱 Israel Medical Workforce Analysis</h1>
-    <div class="subtitle">Active Doctors (Under 43 years experience) | Data Source: MoH Live API</div>
+    <div class="subtitle">Active Doctors (Under 45 years experience) | Data Source: MoH Live API</div>
 
     <div class="section-title">🗺️ Global Market Velocity Map</div>
     <div id="chart-velocity" class="chart-box" style="height: 500px;"></div>
@@ -64,7 +64,7 @@
         <div id="chart-dens" class="chart-box"></div>
     </div>
     
-    <div class="footer">Last Updated: 05/01/2026 11:00</div>
+    <div class="footer">Last Updated: 05/01/2026 11:18</div>
 </div>
 
 <script>
@@ -173,7 +173,8 @@
             y: ['Doctors'],
             type: 'bar',
             orientation: 'h',
-            marker: { color: '#95a5a6' },
+            marker: { color: 'red' },
+            width: 0.3,
             text: [d.count_over_45],
             textposition: 'auto'
         }], {
