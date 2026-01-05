@@ -31,31 +31,31 @@ AAMC_USA_BENCHMARKS = {
     'רפואת ספורט': 0.012,
 }
 
-def parse_custom_date(date_str):
+def get_year_simple(val):
     """
-    Robust parser handling:
-    1. ddmmyyyy (No separators)
-    2. dd/mm/yyyy (Slashes - Israeli standard)
-    3. yyyy-mm-dd (ISO standard)
+    Extracts year by simply taking the last 4 characters.
+    Handles: '25122025', '112025', '25/12/2025', '2025'
     """
-    if pd.isna(date_str) or str(date_str).strip() == "":
-        return pd.NaT
+    s = str(val).strip()
     
-    s = str(date_str).strip()
+    # Remove potential float suffix (.0)
+    if s.endswith('.0'): s = s[:-2]
     
-    # Case 1: 7 or 8 digits (ddmmyyyy)
-    if s.isdigit() and (len(s) == 7 or len(s) == 8):
-        if len(s) == 7: s = "0" + s # Pad leading zero
-        try:
-            day = int(s[0:2])
-            month = int(s[2:4])
-            year = int(s[4:8])
-            return pd.Timestamp(year=year, month=month, day=day)
-        except:
-            return pd.NaT
-            
-    # Case 2: Standard Format with separators (Force DayFirst!)
-    return pd.to_datetime(s, errors='coerce', dayfirst=True)
+    if not s or s.lower() in ['nan', 'none', '', 'nat']:
+        return np.nan
+
+    # Strategy: Just take the last 4 digits if string is long enough
+    # This works for ddmmyyyy, dmyyyy, dd/mm/yyyy, etc.
+    if len(s) >= 4:
+        # Check if last 4 are digits
+        potential_year = s[-4:]
+        if potential_year.isdigit():
+            y = int(potential_year)
+            # Basic sanity check (1900-2100)
+            if 1900 <= y <= CURRENT_YEAR + 1:
+                return y
+    
+    return np.nan
 
 def load_and_clean_data():
     print("⏳ Connecting to data.gov.il API...")
@@ -105,20 +105,21 @@ def load_and_clean_data():
     if 'license_num' not in df.columns:
         df['license_num'] = df['Name'] + "_" + df['license_date_raw'].astype(str)
 
-    # Parse Dates
-    print("⏳ Parsing dates...")
+    # --- YEAR EXTRACTION (Using "Last 4 Digits" Strategy) ---
+    print("⏳ Extracting years...")
     if 'license_date_raw' in df.columns:
-        df['gen_date'] = df['license_date_raw'].apply(parse_custom_date)
+        df['gen_year'] = df['license_date_raw'].apply(get_year_simple)
     else:
         print("❌ Critical: No license date column found.")
         return None
     
     if 'spec_date_raw' in df.columns:
-        df['spec_date'] = df['spec_date_raw'].apply(parse_custom_date)
+        df['spec_year'] = df['spec_date_raw'].apply(get_year_simple)
     else:
-        df['spec_date'] = pd.NaT
+        df['spec_year'] = np.nan
 
-    df = df.dropna(subset=['gen_date'])
+    # Drop invalid general years
+    df = df.dropna(subset=['gen_year'])
 
     # Normalize Specialties
     if 'specialty_name' not in df.columns: df['specialty_name'] = "Unknown"
@@ -137,16 +138,14 @@ def load_and_clean_data():
     df['specialty_name'] = df['specialty_name'].replace(normalization_map)
 
     # CALCULATE EXPERIENCE
-    df['gen_year'] = df['gen_date'].dt.year
     df['gen_experience'] = CURRENT_YEAR - df['gen_year']
     
-    # Specialty Specific Experience (Preferred)
-    df['spec_year'] = df['spec_date'].dt.year
+    # Specialty Experience
     df['spec_experience'] = CURRENT_YEAR - df['spec_year']
-    
-    # Fallback to General Experience only if Spec Date is missing
+    # Fallback only if missing
     df['spec_experience'] = df['spec_experience'].fillna(df['gen_experience']) 
 
+    # Retirement (using Specialty Year preferrably, else General)
     df['retirement_year_spec'] = df['spec_year'].fillna(df['gen_year']) + RETIREMENT_AGE_EXPERIENCE
 
     return df
@@ -165,19 +164,15 @@ def generate_static_site():
     print("⏳ Generating Dashboard...")
     
     for spec in unique_specialties:
-        # Full history for this specialty
         spec_df_all = df[df['specialty_name'] == spec]
-        # Active snapshot for this specialty
         spec_df_active = active_df_rows[active_df_rows['specialty_name'] == spec]
         
-        # Count UNIQUE doctors (Total Active)
         total_active = spec_df_active['license_num'].nunique()
         if total_active < 30: continue 
 
-        # Create unique docs list for KPIs (deduplicated)
         unique_active_docs = spec_df_active.drop_duplicates(subset='license_num')
         
-        # KPIs
+        # Replacement Ratio (Biological Age based)
         juniors_count = len(unique_active_docs[unique_active_docs['gen_experience'] <= 10])
         veterans_count = len(unique_active_docs[unique_active_docs['gen_experience'] >= 30])
         replacement_ratio = round(juniors_count / veterans_count, 2) if veterans_count > 0 else 99.9
@@ -201,12 +196,11 @@ def generate_static_site():
 
         global_velocity_data.append({'x': total_active, 'y': velocity, 'name': spec, 'color': usa_color})
 
-        # --- PREPARE CHART DATA (With Deduplication!) ---
-        # Ensure we don't count the same doctor twice if they appear in the API twice for the same spec
+        # --- CHART 1: New Licenses (Using Extracted Year) ---
+        # Deduplicate: if same doctor listed twice for same specialty, count only once
         spec_df_all_unique = spec_df_all.drop_duplicates(subset='license_num')
+        spec_start_years = spec_df_all_unique['spec_year'].dropna().astype(int)
         
-        # CHART 1: New Licenses (Using Specialty Date)
-        spec_start_years = spec_df_all_unique['spec_year'].dropna()
         joins_per_year = spec_start_years.value_counts().sort_index()
         years_idx = list(range(1980, CURRENT_YEAR + 1))
         joins_counts = [int(joins_per_year.get(y, 0)) for y in years_idx]
@@ -216,11 +210,12 @@ def generate_static_site():
         recent_inflow_sum = sum([joins_per_year.get(y, 0) for y in recent_years])
         avg_inflow = max(1, int(recent_inflow_sum / 5))
 
-        # CHART 2: Net Pipeline (Inflow vs Outflow)
+        # --- CHART 2: Net Pipeline ---
         history_years = list(range(1980, CURRENT_YEAR + 1))
         future_years = list(range(CURRENT_YEAR + 1, 2036))
         net_trend_history, net_trend_forecast = [], []
-        spec_retire_years = spec_df_all_unique['retirement_year_spec'].dropna()
+        
+        spec_retire_years = spec_df_all_unique['retirement_year_spec'].dropna().astype(int)
 
         for y in history_years:
             inflow = len(spec_start_years[(spec_start_years > (y - 10)) & (spec_start_years <= y)])
@@ -235,15 +230,17 @@ def generate_static_site():
             outflow = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y + 10))])
             net_trend_forecast.append((count_real + count_proj) - outflow)
 
-        # CHART 3: Experience Structure (Pie)
+        # --- CHART 3: Experience Structure (PIE CHART) ---
+        # Bins: 0-10, 10-20, 20-45, 45+
         bins = [0, 10, 20, 45, 120]
         labels = ['Juniors (0-10y)', 'Mid (10-20y)', 'Seniors (20-45y)', 'Veterans (45y+)']
+        
         exp_groups = pd.cut(unique_active_docs['spec_experience'], bins=bins, labels=labels, right=False)
         exp_counts = exp_groups.value_counts().sort_index()
         pie_labels = exp_counts.index.tolist()
         pie_values = exp_counts.values.tolist()
         
-        # CHART 4: Density
+        # --- CHART 4: Density ---
         density_x = [density]
         density_y = ['Israel']
         density_colors = ['#3498db']
