@@ -32,25 +32,30 @@ AAMC_USA_BENCHMARKS = {
 }
 
 def parse_custom_date(date_str):
-    """Robust parser for ddmmyyyy, ddmyyyy, and standard formats"""
+    """
+    Robust parser handling:
+    1. ddmmyyyy (No separators)
+    2. dd/mm/yyyy (Slashes - Israeli standard)
+    3. yyyy-mm-dd (ISO standard)
+    """
     if pd.isna(date_str) or str(date_str).strip() == "":
         return pd.NaT
+    
     s = str(date_str).strip()
     
-    # Pad leading zero (e.g. 1042020 -> 01042020)
-    if len(s) == 7: s = "0" + s
-    
-    # If not 8 digits (e.g. contains / or -), use pandas standard parser
-    if len(s) != 8 or not s.isdigit():
-        return pd.to_datetime(s, errors='coerce', dayfirst=True)
-
-    try:
-        day = int(s[0:2])
-        month = int(s[2:4])
-        year = int(s[4:8])
-        return pd.Timestamp(year=year, month=month, day=day)
-    except:
-        return pd.NaT
+    # Case 1: 7 or 8 digits (ddmmyyyy)
+    if s.isdigit() and (len(s) == 7 or len(s) == 8):
+        if len(s) == 7: s = "0" + s # Pad leading zero
+        try:
+            day = int(s[0:2])
+            month = int(s[2:4])
+            year = int(s[4:8])
+            return pd.Timestamp(year=year, month=month, day=day)
+        except:
+            return pd.NaT
+            
+    # Case 2: Standard Format with separators (Force DayFirst!)
+    return pd.to_datetime(s, errors='coerce', dayfirst=True)
 
 def load_and_clean_data():
     print("⏳ Connecting to data.gov.il API...")
@@ -79,7 +84,6 @@ def load_and_clean_data():
     df = pd.DataFrame(all_records)
     print(f"\n✅ Total Raw Records: {len(df)}")
     
-    # Map Columns
     col_map = {
         'שם פרטי': 'first_name', 'שם משפחה': 'last_name',
         'מספר רישיון': 'license_num', 'מספר רשיון': 'license_num', 'mispar_rishyon': 'license_num',
@@ -140,7 +144,9 @@ def load_and_clean_data():
     df['spec_year'] = df['spec_date'].dt.year
     df['spec_experience'] = CURRENT_YEAR - df['spec_year']
     
-    # Fallback to General Experience only if Spec Date is missing
+    # Fallback: If specialty date is missing, use General Date.
+    # IMPORTANT: This ensures the doctor appears in the dashboard even if 'spec_date' is empty,
+    # but the charts relying specifically on 'spec_date' might treat them as older/newer based on license.
     df['spec_experience'] = df['spec_experience'].fillna(df['gen_experience']) 
 
     df['retirement_year_spec'] = df['spec_year'].fillna(df['gen_year']) + RETIREMENT_AGE_EXPERIENCE
@@ -169,7 +175,7 @@ def generate_static_site():
 
         unique_active_docs = spec_df_active.drop_duplicates(subset='license_num')
         
-        # Replacement Ratio
+        # Replacement Ratio (Biological Age based)
         juniors_count = len(unique_active_docs[unique_active_docs['gen_experience'] <= 10])
         veterans_count = len(unique_active_docs[unique_active_docs['gen_experience'] >= 30])
         replacement_ratio = round(juniors_count / veterans_count, 2) if veterans_count > 0 else 99.9
@@ -193,16 +199,18 @@ def generate_static_site():
 
         global_velocity_data.append({'x': total_active, 'y': velocity, 'name': spec, 'color': usa_color})
 
-        # Charts Data
+        # --- CHART 1: New Licenses (Using Specialty Date) ---
         spec_start_years = spec_df_all['spec_year'].dropna()
         joins_per_year = spec_start_years.value_counts().sort_index()
         years_idx = list(range(1980, CURRENT_YEAR + 1))
         joins_counts = [int(joins_per_year.get(y, 0)) for y in years_idx]
 
+        # Forecast logic
         recent_years = range(CURRENT_YEAR - 5, CURRENT_YEAR)
         recent_inflow_sum = sum([joins_per_year.get(y, 0) for y in recent_years])
         avg_inflow = max(1, int(recent_inflow_sum / 5))
 
+        # --- CHART 2: Net Pipeline (Inflow vs Outflow) ---
         history_years = list(range(1980, CURRENT_YEAR + 1))
         future_years = list(range(CURRENT_YEAR + 1, 2036))
         net_trend_history, net_trend_forecast = [], []
@@ -221,18 +229,19 @@ def generate_static_site():
             outflow = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y + 10))])
             net_trend_forecast.append((count_real + count_proj) - outflow)
 
-        # --- PIE CHART DATA (UPDATED) ---
+        # --- CHART 3: Experience Structure (PIE CHART) ---
         # Bins: 0-10, 10-20, 20-45, 45+
         bins = [0, 10, 20, 45, 120]
         labels = ['Juniors (0-10y)', 'Mid (10-20y)', 'Seniors (20-45y)', 'Veterans (45y+)']
         
-        # Using 'spec_experience' for the pie chart logic
+        # Using 'spec_experience' (Specialty Date based)
         exp_groups = pd.cut(unique_active_docs['spec_experience'], bins=bins, labels=labels, right=False)
         exp_counts = exp_groups.value_counts().sort_index()
         
         pie_labels = exp_counts.index.tolist()
         pie_values = exp_counts.values.tolist()
         
+        # --- CHART 4: Density ---
         density_x = [density]
         density_y = ['Israel']
         density_colors = ['#3498db']
