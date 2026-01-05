@@ -11,6 +11,7 @@ API_RESOURCE_ID = "9c64c522-bbc2-48fe-96fb-3b2a8626f59e"
 ISRAEL_POPULATION = 10_170_000
 RETIREMENT_AGE_EXPERIENCE = 45
 CURRENT_YEAR = datetime.datetime.now().year
+TIMESTAMP = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
 
 # --- USA BENCHMARKS (AAMC 2023) ---
 AAMC_USA_BENCHMARKS = {
@@ -31,11 +32,18 @@ AAMC_USA_BENCHMARKS = {
 }
 
 def parse_custom_date(date_str):
+    """Robust parser for ddmmyyyy, ddmyyyy, and standard formats"""
     if pd.isna(date_str) or str(date_str).strip() == "":
         return pd.NaT
     s = str(date_str).strip()
+    
+    # Pad leading zero (e.g. 1042020 -> 01042020)
     if len(s) == 7: s = "0" + s
-    if len(s) != 8: return pd.to_datetime(s, errors='coerce')
+    
+    # If not 8 digits (e.g. contains / or -), use pandas standard parser
+    if len(s) != 8 or not s.isdigit():
+        return pd.to_datetime(s, errors='coerce', dayfirst=True)
+
     try:
         day = int(s[0:2])
         month = int(s[2:4])
@@ -71,6 +79,7 @@ def load_and_clean_data():
     df = pd.DataFrame(all_records)
     print(f"\n✅ Total Raw Records: {len(df)}")
     
+    # Map Columns
     col_map = {
         'שם פרטי': 'first_name', 'שם משפחה': 'last_name',
         'מספר רישיון': 'license_num', 'מספר רשיון': 'license_num', 'mispar_rishyon': 'license_num',
@@ -80,7 +89,7 @@ def load_and_clean_data():
     }
     df = df.rename(columns=col_map)
     
-    # Clean Names
+    # Construct Name
     if 'first_name' in df.columns:
         df['first_name'] = df['first_name'].astype(str).str.strip()
         df['last_name'] = df['last_name'].astype(str).str.strip()
@@ -88,7 +97,7 @@ def load_and_clean_data():
     else:
         df['Name'] = "Unknown"
 
-    # Fix missing ID
+    # Fallback ID
     if 'license_num' not in df.columns:
         df['license_num'] = df['Name'] + "_" + df['license_date_raw'].astype(str)
 
@@ -123,15 +132,15 @@ def load_and_clean_data():
     }
     df['specialty_name'] = df['specialty_name'].replace(normalization_map)
 
-    # Calculate Experience
+    # CALCULATE EXPERIENCE
     df['gen_year'] = df['gen_date'].dt.year
-    df['spec_year'] = df['spec_date'].dt.year
     df['gen_experience'] = CURRENT_YEAR - df['gen_year']
     
-    # Calculate SPECIALTY EXPERIENCE (Current Year - Specialty Date)
-    # We fill NaTs with General Experience just in case, to avoid errors, 
-    # but preferably we use the real specialty date.
+    # Specialty Specific Experience (Preferred)
+    df['spec_year'] = df['spec_date'].dt.year
     df['spec_experience'] = CURRENT_YEAR - df['spec_year']
+    
+    # Fallback to General Experience only if Spec Date is missing
     df['spec_experience'] = df['spec_experience'].fillna(df['gen_experience']) 
 
     df['retirement_year_spec'] = df['spec_year'].fillna(df['gen_year']) + RETIREMENT_AGE_EXPERIENCE
@@ -142,15 +151,14 @@ def generate_static_site():
     df = load_and_clean_data()
     if df is None: return
 
-    # Filter Active Doctors (based on General License < 45 years)
+    # Filter Active Doctors
     active_df_rows = df[df['gen_experience'] <= RETIREMENT_AGE_EXPERIENCE].copy()
-    
     unique_specialties = sorted([s for s in df['specialty_name'].unique() if s.lower() not in ['nan', 'none', '', 'unknown']])
     
     dashboard_data = {}
     global_velocity_data = [] 
 
-    print("⏳ Processing specialties...")
+    print("⏳ Generating Dashboard...")
     
     for spec in unique_specialties:
         spec_df_all = df[df['specialty_name'] == spec]
@@ -161,11 +169,11 @@ def generate_static_site():
 
         unique_active_docs = spec_df_active.drop_duplicates(subset='license_num')
         
-        # KPI: Replacement Ratio (Biological Age based)
+        # Replacement Ratio
         juniors_count = len(unique_active_docs[unique_active_docs['gen_experience'] <= 10])
         veterans_count = len(unique_active_docs[unique_active_docs['gen_experience'] >= 30])
-        
         replacement_ratio = round(juniors_count / veterans_count, 2) if veterans_count > 0 else 99.9
+        
         ratio_color = "#f1c40f"
         if replacement_ratio > 1.2: ratio_color = "#2ecc71"
         if replacement_ratio < 0.8: ratio_color = "#e74c3c"
@@ -177,7 +185,6 @@ def generate_static_site():
         density = (total_active / ISRAEL_POPULATION) * 1000
         usa_bench = AAMC_USA_BENCHMARKS.get(spec, None)
         usa_text, usa_color = "No Benchmark", "gray"
-        
         if usa_bench:
             gap = density - usa_bench
             gap_docs = int(gap * (ISRAEL_POPULATION / 1000))
@@ -186,7 +193,7 @@ def generate_static_site():
 
         global_velocity_data.append({'x': total_active, 'y': velocity, 'name': spec, 'color': usa_color})
 
-        # Charts Logic
+        # Charts Data
         spec_start_years = spec_df_all['spec_year'].dropna()
         joins_per_year = spec_start_years.value_counts().sort_index()
         years_idx = list(range(1980, CURRENT_YEAR + 1))
@@ -214,21 +221,18 @@ def generate_static_site():
             outflow = len(spec_retire_years[(spec_retire_years >= y) & (spec_retire_years < (y + 10))])
             net_trend_forecast.append((count_real + count_proj) - outflow)
 
-        # --- CHART 3: Experience Structure (PIE CHART) ---
-        # Using 'spec_experience' (Specialty Date)
+        # --- PIE CHART DATA (UPDATED) ---
         # Bins: 0-10, 10-20, 20-45, 45+
-        bins = [0, 10, 20, 45, 100]
-        labels = ['Juniors (0-10)', 'Mid (10-20)', 'Seniors (20-45)', 'Veterans (45+)']
+        bins = [0, 10, 20, 45, 120]
+        labels = ['Juniors (0-10y)', 'Mid (10-20y)', 'Seniors (20-45y)', 'Veterans (45y+)']
         
-        # We use cut on spec_experience
+        # Using 'spec_experience' for the pie chart logic
         exp_groups = pd.cut(unique_active_docs['spec_experience'], bins=bins, labels=labels, right=False)
         exp_counts = exp_groups.value_counts().sort_index()
         
-        # Prepare Data for Pie Chart
         pie_labels = exp_counts.index.tolist()
         pie_values = exp_counts.values.tolist()
         
-        # --- CHART 4: Density ---
         density_x = [density]
         density_y = ['Israel']
         density_colors = ['#3498db']
@@ -247,8 +251,7 @@ def generate_static_site():
             "charts": {
                 "years_x": years_idx, 
                 "years_y": joins_counts,
-                # Pie Chart Data
-                "pie_labels": pie_labels,
+                "pie_labels": pie_labels, 
                 "pie_values": pie_values,
                 "hist_x": history_years,
                 "hist_y": net_trend_history,
@@ -287,6 +290,7 @@ def generate_static_site():
         .charts-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; }}
         .chart-box {{ background: white; padding: 10px; border-radius: 8px; border: 1px solid #eee; min-height: 350px; }}
         .chart-full {{ grid-column: 1 / -1; }}
+        .footer {{ text-align: center; margin-top: 50px; color: #bdc3c7; font-size: 0.8em; }}
     </style>
 </head>
 <body>
@@ -325,6 +329,8 @@ def generate_static_site():
         <div id="chart-exp" class="chart-box"></div>
         <div id="chart-dens" class="chart-box"></div>
     </div>
+    
+    <div class="footer">Last Updated: {TIMESTAMP}</div>
 </div>
 
 <script>
@@ -423,7 +429,7 @@ def generate_static_site():
         }}];
         
         Plotly.newPlot('chart-exp', pieData, {{
-            title: 'Experience Structure (Based on Specialty Date)',
+            title: 'Experience Structure (Specialty Date based)',
             margin: {{ t: 40, b: 40, l: 40, r: 40 }}
         }}, {{responsive: true}});
 
@@ -457,7 +463,7 @@ def generate_static_site():
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html_content)
     
-    print("✅ Success! Dashboard updated with Pie Chart.")
+    print("✅ Success! Dashboard generated.")
 
 if __name__ == "__main__":
     generate_static_site()
