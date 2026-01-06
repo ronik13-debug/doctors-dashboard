@@ -39,8 +39,7 @@ AAMC_USA_BENCHMARKS = {
     'אלרגולוגיה ואימונולוגיה קלינית': 0.019
 }
 
-# --- US NEW LICENSES DATA (Extracted from ABMS Report 2024-2025) ---
-# Format: { Specialty: { Year: Count } }
+# --- US NEW LICENSES DATA (Source: ABMS Report 2024-2025) ---
 US_NEW_LICENSES = {
     'Allergy and Immunology': {2015: 147, 2016: 134, 2017: 148, 2018: 145, 2019: 142, 2020: 136, 2021: 143, 2022: 164, 2023: 165, 2024: 158},
     'Anesthesiology': {2015: 1570, 2016: 1654, 2017: 1620, 2018: 1600, 2019: 1754, 2020: 257, 2021: 2724, 2022: 1824, 2023: 1689, 2024: 1782},
@@ -77,6 +76,52 @@ US_NEW_LICENSES = {
     'Endocrinology, Diabetes and Metabolism': {2015: 307, 2016: 289, 2017: 302, 2018: 312, 2019: 316, 2020: 318, 2021: 299, 2022: 322, 2023: 368, 2024: 373},
     'Medical Oncology': {2015: 582, 2016: 609, 2017: 612, 2018: 542, 2019: 568, 2020: 598, 2021: 603, 2022: 664, 2023: 685, 2024: 693},
     'Nephrology': {2015: 487, 2016: 438, 2017: 377, 2018: 353, 2019: 321, 2020: 353, 2021: 355, 2022: 388, 2023: 379, 2024: 398}
+}
+
+# --- US TOTAL ACTIVE PHYSICIANS (Denominator) ---
+# Source: User provided list
+US_TOTAL_ACTIVE = {
+    'Colon and Rectal Surgery': 2839,
+    'Medical Genetics and Genomics': 2890,
+    'Nuclear Medicine': 4394,
+    'Thoracic Surgery': 5999,
+    'Allergy and Immunology': 6501,
+    'Neurological Surgery': 7468,
+    'Plastic Surgery': 9119,
+    'Urology': 12102,
+    'Physical Medicine and Rehabilitation': 12983,
+    'Dermatology': 16090,
+    'Preventive Medicine': 16126,
+    'Otolaryngology - Head and Neck Surgery': 16160,
+    'Ophthalmology': 25888,
+    'Orthopaedic Surgery': 31920,
+    'Pathology': 34114,
+    'Surgery': 45760,
+    'Emergency Medicine': 48182,
+    'Obstetrics and Gynecology': 52809,
+    'Anesthesiology': 64537,
+    'Radiology': 68325,
+    # Psychiatry and Neurology is 83,554. Splitting roughly 73% Psych, 27% Neuro
+    'Psychiatry': 61000, 
+    'Neurology': 22554, 
+    'Family Medicine': 106055,
+    'Pediatrics': 119989,
+    'Internal Medicine': 271213,
+    # Subspecialties of Internal Medicine (Using IM Total as denominator or approximate)
+    # Using IM Total makes the ratio very small. Let's use the main IM total for all IM subs
+    # to represent "share of the IM workforce".
+    'Cardiovascular Disease': 271213,
+    'Gastroenterology': 271213,
+    'Hematology': 271213,
+    'Critical Care Medicine': 271213,
+    'Pulmonary Disease': 271213,
+    'Rheumatology': 271213,
+    'Infectious Disease': 271213,
+    'Endocrinology, Diabetes and Metabolism': 271213,
+    'Medical Oncology': 271213,
+    'Nephrology': 271213,
+    'Diagnostic Radiology': 68325,
+    'Vascular Surgery': 45760 # Using Surgery total as base if specific not found
 }
 
 # Mapping Israeli keys to US keys
@@ -272,14 +317,24 @@ def generate_static_site():
         years_idx = list(range(1980, CURRENT_YEAR + 1))
         joins_counts = [int(joins_per_year.get(y, 0)) for y in years_idx]
 
-        # PREPARE US DATA OVERLAY
+        # PREPARE US DATA OVERLAY (NORMALIZED)
+        # Normalized US Count = US_New * (Israel_Total_Active / US_Total_Active)
         us_x = []
         us_y = []
         us_name = US_MAPPING.get(spec)
-        if us_name and us_name in US_NEW_LICENSES:
+        
+        if us_name and us_name in US_NEW_LICENSES and us_name in US_TOTAL_ACTIVE:
             us_dict = US_NEW_LICENSES[us_name]
-            us_x = sorted(list(us_dict.keys()))
-            us_y = [us_dict[y] for y in us_x]
+            us_total_workforce = US_TOTAL_ACTIVE[us_name]
+            
+            # Use current Israel active count for normalization
+            il_total_workforce = total_active 
+            
+            normalization_factor = il_total_workforce / us_total_workforce if us_total_workforce > 0 else 0
+            
+            available_years = sorted(list(us_dict.keys()))
+            us_x = available_years
+            us_y = [round(us_dict[y] * normalization_factor, 1) for y in us_x]
 
         recent_years = range(CURRENT_YEAR - 5, CURRENT_YEAR)
         recent_inflow_sum = sum([joins_per_year.get(y, 0) for y in recent_years])
@@ -464,7 +519,7 @@ def generate_static_site():
         usaElem.innerText = d.usa_text;
         usaElem.style.color = d.usa_color;
 
-        // CHART 1: ISRAEL + US OVERLAY (Dual Axis)
+        // CHART 1: ISRAEL + US OVERLAY (Normalized)
         var traceIsrael = {{
             x: d.charts.years_x,
             y: d.charts.years_y,
@@ -474,34 +529,26 @@ def generate_static_site():
         }};
         
         var dataJoins = [traceIsrael];
-        var layoutJoins = {{
-            title: 'New Specialty Licenses (Israel vs US Trend)',
-            margin: {{ t: 40, b: 40, l: 40, r: 40 }},
-            xaxis: {{ title: 'Year' }},
-            yaxis: {{ title: 'Israel Count' }},
-            legend: {{ x: 0, y: 1.1, orientation: 'h' }}
-        }};
-
+        
         if (d.charts.us_x && d.charts.us_x.length > 0) {{
             var traceUS = {{
                 x: d.charts.us_x,
                 y: d.charts.us_y,
-                name: 'US New Licenses (Trend)',
+                name: 'US Trend (Scaled by Workforce Size)',
                 type: 'scatter',
                 mode: 'lines+markers',
-                yaxis: 'y2',
-                line: {{ color: '#e74c3c', width: 3 }}
+                line: {{ color: '#e74c3c', width: 3, dash: 'dot' }}
             }};
             dataJoins.push(traceUS);
-            layoutJoins.yaxis2 = {{
-                title: 'US Count',
-                overlaying: 'y',
-                side: 'right',
-                showgrid: false
-            }};
         }}
 
-        Plotly.newPlot('chart-joins', dataJoins, layoutJoins, {{responsive: true}});
+        Plotly.newPlot('chart-joins', dataJoins, {{
+            title: 'New Specialty Licenses (Israel vs US Trend)',
+            margin: {{ t: 40, b: 40, l: 40, r: 40 }},
+            xaxis: {{ title: 'Year' }},
+            yaxis: {{ title: 'Count' }},
+            legend: {{ x: 0, y: 1.1, orientation: 'h' }}
+        }}, {{responsive: true}});
 
         const traceHist = {{
             x: d.charts.hist_x,
@@ -555,7 +602,7 @@ def generate_static_site():
             text: [d.count_over_45],
             textposition: 'auto'
         }}], {{
-            title: 'Doctors Over 67 Years (Gen License)',
+            title: 'Doctors Over 67 Years old',
             margin: {{ t: 30, b: 30, l: 60, r: 20 }},
             xaxis: {{ visible: false }}
         }}, {{responsive: true}});
@@ -590,7 +637,7 @@ def generate_static_site():
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html_content)
     
-    print("✅ Success! Dashboard updated with US Data Overlay.")
+    print("✅ Success! Dashboard updated with NORMALIZED US Data Overlay.")
 
 if __name__ == "__main__":
     generate_static_site()
