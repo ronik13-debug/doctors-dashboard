@@ -30,7 +30,7 @@ AAMC_USA_BENCHMARKS = {
     'כירורגיה אורתופדית': 0.095,
     'כירורגיה פלסטית ואסתטית': 0.027, 
     'כירורגיה אורולוגית': 0.036,
-    'מחלות אף אוזן וגרון': 0.048, 
+    'מחלות א.א.ג. וכירורגיית ראש-צוואר': 0.048, 
     'רפואה פיזיקלית ושיקום': 0.039, 
     'דרמטולוגיה-מחלות עור ומין': 0.048, 
     'בריאות הציבור': 0.048,     
@@ -79,7 +79,6 @@ US_NEW_LICENSES = {
 }
 
 # --- US TOTAL ACTIVE PHYSICIANS (Denominator) ---
-# Source: User provided list
 US_TOTAL_ACTIVE = {
     'Colon and Rectal Surgery': 2839,
     'Medical Genetics and Genomics': 2890,
@@ -101,15 +100,11 @@ US_TOTAL_ACTIVE = {
     'Obstetrics and Gynecology': 52809,
     'Anesthesiology': 64537,
     'Radiology': 68325,
-    # Psychiatry and Neurology is 83,554. Splitting roughly 73% Psych, 27% Neuro
     'Psychiatry': 61000, 
     'Neurology': 22554, 
     'Family Medicine': 106055,
     'Pediatrics': 119989,
     'Internal Medicine': 271213,
-    # Subspecialties of Internal Medicine (Using IM Total as denominator or approximate)
-    # Using IM Total makes the ratio very small. Let's use the main IM total for all IM subs
-    # to represent "share of the IM workforce".
     'Cardiovascular Disease': 271213,
     'Gastroenterology': 271213,
     'Hematology': 271213,
@@ -121,7 +116,7 @@ US_TOTAL_ACTIVE = {
     'Medical Oncology': 271213,
     'Nephrology': 271213,
     'Diagnostic Radiology': 68325,
-    'Vascular Surgery': 45760 # Using Surgery total as base if specific not found
+    'Vascular Surgery': 45760 
 }
 
 # Mapping Israeli keys to US keys
@@ -317,24 +312,30 @@ def generate_static_site():
         years_idx = list(range(1980, CURRENT_YEAR + 1))
         joins_counts = [int(joins_per_year.get(y, 0)) for y in years_idx]
 
-        # PREPARE US DATA OVERLAY (NORMALIZED)
-        # Normalized US Count = US_New * (Israel_Total_Active / US_Total_Active)
+        # PREPARE US DATA OVERLAY (With Secondary Axis Scaling)
         us_x = []
-        us_y = []
+        us_y = [] # Raw values
         us_name = US_MAPPING.get(spec)
-        
+        normalization_factor = 1.0 # Default fallback
+
         if us_name and us_name in US_NEW_LICENSES and us_name in US_TOTAL_ACTIVE:
             us_dict = US_NEW_LICENSES[us_name]
-            us_total_workforce = US_TOTAL_ACTIVE[us_name]
             
-            # Use current Israel active count for normalization
-            il_total_workforce = total_active 
+            # Factor = Israel_Total / US_Total
+            # Example: IL=1000, US=100,000 -> Factor = 0.01
+            # If US new = 500, Normalized = 5.
+            # We want visual height to be 5, but label to be 500.
+            # So Right Axis Range = Left Axis Range / Factor.
+            # If Left Max = 10, Right Max = 10 / 0.01 = 1000.
             
-            normalization_factor = il_total_workforce / us_total_workforce if us_total_workforce > 0 else 0
+            us_total_active = US_TOTAL_ACTIVE[us_name]
+            il_total_active = total_active
             
-            available_years = sorted(list(us_dict.keys()))
-            us_x = available_years
-            us_y = [round(us_dict[y] * normalization_factor, 1) for y in us_x]
+            if us_total_active > 0:
+                normalization_factor = il_total_active / us_total_active
+            
+            us_x = sorted(list(us_dict.keys()))
+            us_y = [us_dict[y] for y in us_x]
 
         recent_years = range(CURRENT_YEAR - 5, CURRENT_YEAR)
         recent_inflow_sum = sum([joins_per_year.get(y, 0) for y in recent_years])
@@ -373,6 +374,24 @@ def generate_static_site():
             density_y.append('USA')
             density_colors.append('#2c3e50')
 
+        # DYNAMIC RANGE CALCULATION FOR DUAL AXIS
+        # We need to determine the Y-axis range for Israel (y1) to set y2 range correctly
+        il_max_val = max(joins_counts) if joins_counts else 10
+        
+        # We also need to check if the normalized US line goes higher than IL bars
+        # US_Norm = US_Raw * Factor
+        us_max_norm = (max(us_y) * normalization_factor) if us_y else 0
+        
+        # The chart ceiling should be the max of either
+        global_max_norm = max(il_max_val, us_max_norm) * 1.1 # +10% padding
+        
+        # Y1 Range (Israel) -> [0, global_max_norm]
+        y1_range = [0, global_max_norm]
+        
+        # Y2 Range (US) -> [0, global_max_norm / normalization_factor]
+        # This aligns the visual height: Value V on right corresponds to V*Factor on left.
+        y2_range = [0, global_max_norm / normalization_factor] if normalization_factor > 0 else [0, 100]
+
         dashboard_data[spec] = {
             "total": int(total_active),
             "net_now": int(net_now),
@@ -386,6 +405,8 @@ def generate_static_site():
                 "years_y": joins_counts,
                 "us_x": us_x,
                 "us_y": us_y,
+                "y1_range": y1_range,
+                "y2_range": y2_range,
                 "pie_labels": pie_labels, 
                 "pie_values": pie_values,
                 "hist_x": history_years,
@@ -519,7 +540,7 @@ def generate_static_site():
         usaElem.innerText = d.usa_text;
         usaElem.style.color = d.usa_color;
 
-        // CHART 1: ISRAEL + US OVERLAY (Normalized)
+        // CHART 1: ISRAEL + US DUAL AXIS SCALED
         var traceIsrael = {{
             x: d.charts.years_x,
             y: d.charts.years_y,
@@ -529,26 +550,36 @@ def generate_static_site():
         }};
         
         var dataJoins = [traceIsrael];
-        
+        var layoutJoins = {{
+            title: 'New Specialty Licenses (Visual Comparison)',
+            margin: {{ t: 40, b: 40, l: 40, r: 40 }},
+            xaxis: {{ title: 'Year' }},
+            yaxis: {{ title: 'Israel Count', range: d.charts.y1_range }},
+            legend: {{ x: 0, y: 1.1, orientation: 'h' }}
+        }};
+
         if (d.charts.us_x && d.charts.us_x.length > 0) {{
             var traceUS = {{
                 x: d.charts.us_x,
                 y: d.charts.us_y,
-                name: 'US Trend (Scaled by Workforce Size)',
+                name: 'US New Licenses (Scaled Axis)',
                 type: 'scatter',
                 mode: 'lines+markers',
+                yaxis: 'y2',
                 line: {{ color: '#e74c3c', width: 3, dash: 'dot' }}
             }};
             dataJoins.push(traceUS);
+            
+            layoutJoins.yaxis2 = {{
+                title: 'US Count',
+                overlaying: 'y',
+                side: 'right',
+                range: d.charts.y2_range,
+                showgrid: false
+            }};
         }}
 
-        Plotly.newPlot('chart-joins', dataJoins, {{
-            title: 'New Specialty Licenses (Israel vs US Trend)',
-            margin: {{ t: 40, b: 40, l: 40, r: 40 }},
-            xaxis: {{ title: 'Year' }},
-            yaxis: {{ title: 'Count' }},
-            legend: {{ x: 0, y: 1.1, orientation: 'h' }}
-        }}, {{responsive: true}});
+        Plotly.newPlot('chart-joins', dataJoins, layoutJoins, {{responsive: true}});
 
         const traceHist = {{
             x: d.charts.hist_x,
@@ -637,7 +668,7 @@ def generate_static_site():
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html_content)
     
-    print("✅ Success! Dashboard updated with NORMALIZED US Data Overlay.")
+    print("✅ Success! Dashboard updated with SCALED DUAL AXIS.")
 
 if __name__ == "__main__":
     generate_static_site()
