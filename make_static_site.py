@@ -356,4 +356,683 @@ def generate_static_site():
         pie_values = exp_counts.values.tolist()
         
         density_x = [density]
-        density_
+        density_y = ['Israel']
+        density_colors = ['#3498db']
+        if usa_bench:
+            density_x.append(usa_bench)
+            density_y.append('USA')
+            density_colors.append('#34495e')
+
+        il_max_val = max(joins_counts) if joins_counts else 10
+        us_max_norm = (max(us_y) * normalization_factor) if us_y else 0
+        global_max_norm = max(il_max_val, us_max_norm) * 1.1
+        y1_range = [0, global_max_norm]
+        y2_range = [0, global_max_norm / normalization_factor] if normalization_factor > 0 else [0, 100]
+
+        dashboard_data[spec] = {
+            "total": int(total_active),
+            "net_now": int(net_now),
+            "usa_text": usa_text,
+            "usa_color": usa_color,
+            "ratio_val": replacement_ratio,
+            "ratio_color": ratio_color,
+            "count_over_45": int(count_over_45),
+            "charts": {
+                "years_x": years_idx, 
+                "years_y": joins_counts,
+                "us_x": us_x,
+                "us_y": us_y,
+                "y1_range": y1_range,
+                "y2_range": y2_range,
+                "pie_labels": pie_labels, 
+                "pie_values": pie_values,
+                "hist_x": history_years,
+                "hist_y": net_trend_history,
+                "fut_x": future_years,
+                "fut_y": net_trend_forecast,
+                "dens_x": density_x,
+                "dens_y": density_y,
+                "dens_c": density_colors,
+                "usa_bench": usa_bench 
+            }
+        }
+
+    json_dashboard = json.dumps(dashboard_data, default=lambda x: int(x) if isinstance(x, (np.int64, np.int32)) else x)
+    json_global = json.dumps(global_velocity_data, default=lambda x: int(x) if isinstance(x, (np.int64, np.int32)) else x)
+
+    html_content = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Israel Medical Workforce Dashboard</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        
+        body {{
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+            color: #2d3748;
+        }}
+        
+        .container {{
+            max-width: 1400px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.98);
+            padding: 40px;
+            border-radius: 24px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(10px);
+            animation: fadeIn 0.6s ease-out;
+        }}
+        
+        @keyframes fadeIn {{
+            from {{ opacity: 0; transform: translateY(20px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+        
+        .header {{
+            text-align: center;
+            margin-bottom: 50px;
+            position: relative;
+        }}
+        
+        h1 {{
+            font-size: 3em;
+            font-weight: 700;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 15px;
+            letter-spacing: -1px;
+        }}
+        
+        .subtitle {{
+            color: #718096;
+            font-size: 1.1em;
+            font-weight: 300;
+        }}
+        
+        .badge {{
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 8px 20px;
+            border-radius: 50px;
+            font-size: 0.85em;
+            font-weight: 600;
+            margin-top: 15px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }}
+        
+        .section-title {{
+            font-size: 1.8em;
+            font-weight: 700;
+            color: #2d3748;
+            margin: 50px 0 25px 0;
+            padding-bottom: 15px;
+            border-bottom: 3px solid #667eea;
+            position: relative;
+        }}
+        
+        .section-title::before {{
+            content: '';
+            position: absolute;
+            bottom: -3px;
+            left: 0;
+            width: 100px;
+            height: 3px;
+            background: #764ba2;
+        }}
+        
+        .controls {{
+            text-align: center;
+            margin: 40px 0;
+            padding: 30px;
+            background: linear-gradient(135deg, #f7fafc 0%, #edf2f7 100%);
+            border-radius: 16px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+        }}
+        
+        .controls label {{
+            font-weight: 600;
+            color: #4a5568;
+            font-size: 1.1em;
+            margin-right: 15px;
+        }}
+        
+        select {{
+            padding: 14px 24px;
+            font-size: 16px;
+            border-radius: 12px;
+            border: 2px solid #e2e8f0;
+            min-width: 350px;
+            background: white;
+            color: #2d3748;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        }}
+        
+        select:hover {{
+            border-color: #667eea;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
+        }}
+        
+        select:focus {{
+            outline: none;
+            border-color: #764ba2;
+            box-shadow: 0 0 0 4px rgba(118, 75, 162, 0.1);
+        }}
+        
+        .kpi-row {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 25px;
+            margin-bottom: 40px;
+        }}
+        
+        .kpi-card {{
+            background: linear-gradient(135deg, #ffffff 0%, #f7fafc 100%);
+            padding: 30px;
+            border-radius: 16px;
+            border: 2px solid #e2e8f0;
+            text-align: center;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+            position: relative;
+            overflow: hidden;
+        }}
+        
+        .kpi-card::before {{
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        }}
+        
+        .kpi-card:hover {{
+            transform: translateY(-5px);
+            box-shadow: 0 12px 30px rgba(102, 126, 234, 0.2);
+            border-color: #667eea;
+        }}
+        
+        .kpi-val {{
+            font-size: 3em;
+            font-weight: 700;
+            color: #2d3748;
+            display: block;
+            margin: 15px 0;
+            line-height: 1;
+        }}
+        
+        .kpi-label {{
+            font-size: 0.9em;
+            color: #718096;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            font-weight: 600;
+        }}
+        
+        .charts-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            gap: 30px;
+            margin-top: 30px;
+        }}
+        
+        .chart-box {{
+            background: white;
+            padding: 20px;
+            border-radius: 16px;
+            border: 1px solid #e2e8f0;
+            min-height: 400px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+            transition: all 0.3s ease;
+        }}
+        
+        .chart-box:hover {{
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.1);
+            transform: translateY(-2px);
+        }}
+        
+        .chart-full {{
+            grid-column: 1 / -1;
+        }}
+        
+        .footer {{
+            text-align: center;
+            margin-top: 60px;
+            padding-top: 30px;
+            border-top: 2px solid #e2e8f0;
+            color: #a0aec0;
+            font-size: 0.9em;
+            font-weight: 500;
+        }}
+        
+        @media (max-width: 768px) {{
+            h1 {{ font-size: 2em; }}
+            .container {{ padding: 25px; }}
+            .charts-grid {{ grid-template-columns: 1fr; }}
+            select {{ min-width: 100%; }}
+        }}
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <h1>🇮🇱 Israel Medical Workforce</h1>
+        <div class="subtitle">Comprehensive Analysis of Active Doctors Under 45 Years Experience</div>
+        <div class="badge">Live Data from Ministry of Health</div>
+    </div>
+
+    <div class="section-title">🗺️ Global Market Velocity Map</div>
+    <div id="chart-velocity" class="chart-box" style="height: 550px;"></div>
+
+    <div class="section-title">🔬 Specialty Deep Dive</div>
+    <div class="controls">
+        <label for="specSelect">Select Specialty:</label>
+        <select id="specSelect" onchange="updateDashboard()"></select>
+    </div>
+
+    <div class="kpi-row">
+        <div class="kpi-card">
+            <span class="kpi-val" id="kpi-total">-</span>
+            <span class="kpi-label">Active Doctors</span>
+        </div>
+        <div class="kpi-card">
+            <span class="kpi-val" id="kpi-ratio">-</span>
+            <span class="kpi-label">Junior/Veteran Ratio</span>
+        </div>
+        <div class="kpi-card">
+            <span class="kpi-val" id="kpi-usa">-</span>
+            <span class="kpi-label">USA Benchmark Gap</span>
+        </div>
+    </div>
+
+    <div class="charts-grid">
+        <div id="chart-joins" class="chart-box chart-full"></div>
+        <div id="chart-trend" class="chart-box chart-full"></div>
+        <div id="chart-exp" class="chart-box"></div>
+        <div id="chart-dens" class="chart-box"></div>
+    </div>
+    
+    <div class="footer">
+        <strong>Last Updated:</strong> {TIMESTAMP} • <strong>Data Source:</strong> Israel Ministry of Health API
+    </div>
+</div>
+
+<script>
+    const data = {json_dashboard};
+    const globalData = {json_global};
+    const specialties = Object.keys(data).sort();
+
+    const chartConfig = {{
+        responsive: true,
+        displayModeBar: false
+    }};
+
+    const mapTrace = {{
+        x: globalData.map(d => d.x),
+        y: globalData.map(d => d.y),
+        text: globalData.map(d => d.name),
+        mode: 'markers',
+        marker: {{
+            size: globalData.map(d => Math.sqrt(d.x) * 1.8),
+            color: globalData.map(d => d.y),
+            colorscale: [
+                [0, '#e74c3c'],
+                [0.5, '#f39c12'],
+                [1, '#27ae60']
+            ],
+            showscale: true,
+            colorbar: {{
+                title: 'Velocity %',
+                thickness: 15,
+                len: 0.7
+            }},
+            opacity: 0.85,
+            line: {{
+                width: 2,
+                color: 'white'
+            }}
+        }},
+        hovertemplate: '<b>%{{text}}</b><br>Total: %{{x}}<br>Velocity: %{{y:.1f}}%<extra></extra>'
+    }};
+    
+    Plotly.newPlot('chart-velocity', [mapTrace], {{
+        title: {{
+            text: 'Workforce Size vs Growth Velocity',
+            font: {{ size: 20, family: 'Inter', weight: 600 }}
+        }},
+        xaxis: {{ 
+            title: 'Total Active Doctors',
+            gridcolor: '#f0f0f0',
+            showline: true,
+            linewidth: 2,
+            linecolor: '#e2e8f0'
+        }},
+        yaxis: {{ 
+            title: 'Growth Velocity (% Juniors)',
+            gridcolor: '#f0f0f0',
+            showline: true,
+            linewidth: 2,
+            linecolor: '#e2e8f0'
+        }},
+        hovermode: 'closest',
+        plot_bgcolor: '#fafafa',
+        paper_bgcolor: 'white',
+        margin: {{ t: 60, b: 60, l: 60, r: 60 }}
+    }}, chartConfig);
+
+    const select = document.getElementById('specSelect');
+    specialties.forEach(spec => {{
+        const opt = document.createElement('option');
+        opt.value = spec;
+        opt.innerHTML = spec;
+        select.appendChild(opt);
+    }});
+
+    function updateDashboard() {{
+        const spec = select.value;
+        const d = data[spec];
+        
+        document.getElementById('kpi-total').innerText = d.total.toLocaleString();
+        
+        const ratioElem = document.getElementById('kpi-ratio');
+        ratioElem.innerText = d.ratio_val;
+        ratioElem.style.color = d.ratio_color;
+        
+        const usaElem = document.getElementById('kpi-usa');
+        usaElem.innerText = d.usa_text;
+        usaElem.style.color = d.usa_color;
+
+        var traceIsrael = {{
+            x: d.charts.years_x,
+            y: d.charts.years_y,
+            name: 'Israel',
+            type: 'bar',
+            marker: {{ 
+                color: '#667eea',
+                line: {{ width: 0 }}
+            }},
+            hovertemplate: '<b>Israel</b><br>Year: %{{x}}<br>Count: %{{y}}<extra></extra>'
+        }};
+        
+        var dataJoins = [traceIsrael];
+        var layoutJoins = {{
+            title: {{
+                text: 'New Specialty Licenses: Israel vs USA (Normalized)',
+                font: {{ size: 18, family: 'Inter', weight: 600 }}
+            }},
+            margin: {{ t: 60, b: 60, l: 60, r: 80 }},
+            xaxis: {{ 
+                title: 'Year',
+                gridcolor: '#f0f0f0'
+            }},
+            yaxis: {{ 
+                title: 'Israel Count',
+                range: d.charts.y1_range,
+                gridcolor: '#f0f0f0'
+            }},
+            legend: {{ 
+                x: 0.02,
+                y: 0.98,
+                bgcolor: 'rgba(255, 255, 255, 0.9)',
+                bordercolor: '#e2e8f0',
+                borderwidth: 1
+            }},
+            plot_bgcolor: '#fafafa',
+            paper_bgcolor: 'white',
+            hovermode: 'x unified'
+        }};
+
+        if (d.charts.us_x && d.charts.us_x.length > 0) {{
+            var traceUS = {{
+                x: d.charts.us_x,
+                y: d.charts.us_y,
+                name: 'USA (Scaled)',
+                type: 'scatter',
+                mode: 'lines+markers',
+                yaxis: 'y2',
+                line: {{ 
+                    color: '#e74c3c',
+                    width: 3
+                }},
+                marker: {{
+                    size: 8,
+                    color: 'white',
+                    line: {{
+                        width: 2,
+                        color: '#e74c3c'
+                    }}
+                }},
+                hovertemplate: '<b>USA</b><br>Year: %{{x}}<br>Count: %{{y}}<extra></extra>'
+            }};
+            dataJoins.push(traceUS);
+            
+            layoutJoins.yaxis2 = {{
+                title: 'USA Count',
+                overlaying: 'y',
+                side: 'right',
+                range: d.charts.y2_range,
+                showgrid: false
+            }};
+        }}
+
+        Plotly.newPlot('chart-joins', dataJoins, layoutJoins, chartConfig);
+
+        const traceHist = {{
+            x: d.charts.hist_x,
+            y: d.charts.hist_y,
+            name: 'Historical',
+            type: 'scatter',
+            mode: 'lines',
+            fill: 'tozeroy',
+            fillcolor: 'rgba(102, 126, 234, 0.2)',
+            line: {{ 
+                width: 3,
+                color: '#667eea'
+            }},
+            hovertemplate: '<b>Historical</b><br>Year: %{{x}}<br>Net: %{{y}}<extra></extra>'
+        }};
+        
+        const traceFut = {{
+            x: [d.charts.hist_x[d.charts.hist_x.length-1], ...d.charts.fut_x],
+            y: [d.charts.hist_y[d.charts.hist_y.length-1], ...d.charts.fut_y],
+            name: 'Projected',
+            type: 'scatter',
+            mode: 'lines',
+            fill: 'tozeroy',
+            fillcolor: 'rgba(231, 76, 60, 0.1)',
+            line: {{ 
+                width: 3,
+                color: '#e74c3c',
+                dash: 'dot'
+            }},
+            hovertemplate: '<b>Projected</b><br>Year: %{{x}}<br>Net: %{{y}}<extra></extra>'
+        }};
+
+        Plotly.newPlot('chart-trend', [traceHist, traceFut], {{
+            title: {{
+                text: 'Net Pipeline Trend (Inflow vs Retirement)',
+                font: {{ size: 18, family: 'Inter', weight: 600 }}
+            }},
+            margin: {{ t: 60, b: 60, l: 60, r: 60 }},
+            shapes: [{{
+                type: 'line',
+                x0: 1980,
+                x1: 2035,
+                y0: 0,
+                y1: 0,
+                line: {{ 
+                    color: '#95a5a6',
+                    width: 2,
+                    dash: 'dash'
+                }}
+            }}],
+            xaxis: {{ 
+                title: 'Year',
+                range: [1980, 2035],
+                gridcolor: '#f0f0f0'
+            }},
+            yaxis: {{ 
+                title: 'Net Balance',
+                gridcolor: '#f0f0f0',
+                zeroline: true,
+                zerolinecolor: '#95a5a6',
+                zerolinewidth: 2
+            }},
+            legend: {{
+                x: 0.02,
+                y: 0.98,
+                bgcolor: 'rgba(255, 255, 255, 0.9)',
+                bordercolor: '#e2e8f0',
+                borderwidth: 1
+            }},
+            plot_bgcolor: '#fafafa',
+            paper_bgcolor: 'white'
+        }}, chartConfig);
+
+        var pieData = [{{
+            values: d.charts.pie_values,
+            labels: d.charts.pie_labels,
+            type: 'pie',
+            hole: 0.4,
+            marker: {{ 
+                colors: ['#27ae60', '#3498db', '#f39c12'],
+                line: {{
+                    color: 'white',
+                    width: 3
+                }}
+            }},
+            textfont: {{
+                size: 14,
+                family: 'Inter'
+            }},
+            textinfo: 'label+percent',
+            hovertemplate: '<b>%{{label}}</b><br>Count: %{{value}}<br>Percentage: %{{percent}}<extra></extra>'
+        }}];
+        
+        Plotly.newPlot('chart-exp', pieData, {{
+            title: {{
+                text: 'Experience Distribution',
+                font: {{ size: 18, family: 'Inter', weight: 600 }}
+            }},
+            margin: {{ t: 60, b: 40, l: 40, r: 40 }},
+            paper_bgcolor: 'white',
+            showlegend: true,
+            legend: {{
+                orientation: 'h',
+                y: -0.1
+            }}
+        }}, chartConfig);
+
+        const densityTrace = {{
+            x: d.charts.dens_x,
+            y: d.charts.dens_y,
+            type: 'bar',
+            orientation: 'h',
+            marker: {{ 
+                color: d.charts.dens_c,
+                line: {{ width: 0 }}
+            }},
+            text: d.charts.dens_x.map(v => v.toFixed(3)),
+            textposition: 'auto',
+            textfont: {{
+                size: 14,
+                family: 'Inter',
+                weight: 600,
+                color: 'white'
+            }},
+            hovertemplate: '<b>%{{y}}</b><br>Density: %{{x:.3f}}<extra></extra>'
+        }};
+        
+        const densLayout = {{
+            title: {{
+                text: 'Doctor Density per 1,000 Population',
+                font: {{ size: 18, family: 'Inter', weight: 600 }}
+            }},
+            margin: {{ t: 60, b: 60, l: 100, r: 60 }},
+            xaxis: {{ 
+                zeroline: false,
+                gridcolor: '#f0f0f0'
+            }},
+            yaxis: {{
+                gridcolor: '#f0f0f0'
+            }},
+            plot_bgcolor: '#fafafa',
+            paper_bgcolor: 'white'
+        }};
+        
+        if(d.charts.usa_bench) {{
+            densLayout.shapes = [{{
+                type: 'line',
+                x0: d.charts.usa_bench,
+                x1: d.charts.usa_bench,
+                y0: -0.5,
+                y1: 1.5,
+                line: {{ 
+                    color: '#e74c3c',
+                    width: 3,
+                    dash: 'dash'
+                }}
+            }}];
+            densLayout.annotations = [{{
+                x: d.charts.usa_bench,
+                y: 1.2,
+                text: 'USA Benchmark',
+                showarrow: true,
+                arrowhead: 2,
+                arrowsize: 1,
+                arrowwidth: 2,
+                arrowcolor: '#e74c3c',
+                ax: 40,
+                ay: -40,
+                font: {{
+                    size: 12,
+                    color: '#e74c3c',
+                    family: 'Inter',
+                    weight: 600
+                }},
+                bgcolor: 'white',
+                bordercolor: '#e74c3c',
+                borderwidth: 2,
+                borderpad: 4
+            }}];
+        }}
+        
+        Plotly.newPlot('chart-dens', [densityTrace], densLayout, chartConfig);
+    }}
+    
+    if (specialties.length > 0) updateDashboard();
+</script>
+
+</body>
+</html>
+    """
+
+    with open("index.html", "w", encoding="utf-8") as f:
+        f.write(html_content)
+    
+    print("✅ Success! Enhanced dashboard created with modern design.")
+
+if __name__ == "__main__":
+    generate_static_site()
