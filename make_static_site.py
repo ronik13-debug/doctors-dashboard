@@ -229,7 +229,6 @@ def load_and_clean_data():
 
     df = df.dropna(subset=['gen_year'])
 
-    # --- NORMALIZE SPECIALTIES ---
     if 'specialty_name' not in df.columns: df['specialty_name'] = "Unknown"
     df['specialty_name'] = df['specialty_name'].astype(str).str.strip()
     
@@ -287,8 +286,8 @@ def generate_static_site():
         veterans_count = len(unique_active_docs[unique_active_docs['gen_experience'] >= 30])
         replacement_ratio = round(juniors_count / veterans_count, 2) if veterans_count > 0 else 99.9
         
-        ratio_color = "#f1c40f"
-        if replacement_ratio > 1.2: ratio_color = "#2ecc71"
+        ratio_color = "#f39c12"
+        if replacement_ratio > 1.2: ratio_color = "#27ae60"
         if replacement_ratio < 0.8: ratio_color = "#e74c3c"
 
         velocity = (juniors_count / total_active) * 100
@@ -297,37 +296,27 @@ def generate_static_site():
         
         density = (total_active / ISRAEL_POPULATION) * 1000
         usa_bench = AAMC_USA_BENCHMARKS.get(spec, None)
-        usa_text, usa_color = "No Benchmark", "gray"
+        usa_text, usa_color = "No Benchmark", "#95a5a6"
         if usa_bench:
             gap = density - usa_bench
             gap_docs = int(gap * (ISRAEL_POPULATION / 1000))
             if gap < 0: usa_text, usa_color = f"Deficit: {gap_docs}", "#e74c3c"
-            else: usa_text, usa_color = f"Surplus: +{gap_docs}", "#2ecc71"
+            else: usa_text, usa_color = f"Surplus: +{gap_docs}", "#27ae60"
 
         global_velocity_data.append({'x': total_active, 'y': velocity, 'name': spec, 'color': usa_color})
 
-        # CHART 1: New Licenses (Israel)
         spec_start_years = spec_df_all_unique['spec_year'].dropna().astype(int)
         joins_per_year = spec_start_years.value_counts().sort_index()
         years_idx = list(range(1980, CURRENT_YEAR + 1))
         joins_counts = [int(joins_per_year.get(y, 0)) for y in years_idx]
 
-        # PREPARE US DATA OVERLAY (With Secondary Axis Scaling)
         us_x = []
-        us_y = [] # Raw values
+        us_y = []
         us_name = US_MAPPING.get(spec)
-        normalization_factor = 1.0 # Default fallback
+        normalization_factor = 1.0
 
         if us_name and us_name in US_NEW_LICENSES and us_name in US_TOTAL_ACTIVE:
             us_dict = US_NEW_LICENSES[us_name]
-            
-            # Factor = Israel_Total / US_Total
-            # Example: IL=1000, US=100,000 -> Factor = 0.01
-            # If US new = 500, Normalized = 5.
-            # We want visual height to be 5, but label to be 500.
-            # So Right Axis Range = Left Axis Range / Factor.
-            # If Left Max = 10, Right Max = 10 / 0.01 = 1000.
-            
             us_total_active = US_TOTAL_ACTIVE[us_name]
             il_total_active = total_active
             
@@ -367,308 +356,4 @@ def generate_static_site():
         pie_values = exp_counts.values.tolist()
         
         density_x = [density]
-        density_y = ['Israel']
-        density_colors = ['#3498db']
-        if usa_bench:
-            density_x.append(usa_bench)
-            density_y.append('USA')
-            density_colors.append('#2c3e50')
-
-        # DYNAMIC RANGE CALCULATION FOR DUAL AXIS
-        # We need to determine the Y-axis range for Israel (y1) to set y2 range correctly
-        il_max_val = max(joins_counts) if joins_counts else 10
-        
-        # We also need to check if the normalized US line goes higher than IL bars
-        # US_Norm = US_Raw * Factor
-        us_max_norm = (max(us_y) * normalization_factor) if us_y else 0
-        
-        # The chart ceiling should be the max of either
-        global_max_norm = max(il_max_val, us_max_norm) * 1.1 # +10% padding
-        
-        # Y1 Range (Israel) -> [0, global_max_norm]
-        y1_range = [0, global_max_norm]
-        
-        # Y2 Range (US) -> [0, global_max_norm / normalization_factor]
-        # This aligns the visual height: Value V on right corresponds to V*Factor on left.
-        y2_range = [0, global_max_norm / normalization_factor] if normalization_factor > 0 else [0, 100]
-
-        dashboard_data[spec] = {
-            "total": int(total_active),
-            "net_now": int(net_now),
-            "usa_text": usa_text,
-            "usa_color": usa_color,
-            "ratio_val": replacement_ratio,
-            "ratio_color": ratio_color,
-            "count_over_45": int(count_over_45),
-            "charts": {
-                "years_x": years_idx, 
-                "years_y": joins_counts,
-                "us_x": us_x,
-                "us_y": us_y,
-                "y1_range": y1_range,
-                "y2_range": y2_range,
-                "pie_labels": pie_labels, 
-                "pie_values": pie_values,
-                "hist_x": history_years,
-                "hist_y": net_trend_history,
-                "fut_x": future_years,
-                "fut_y": net_trend_forecast,
-                "dens_x": density_x,
-                "dens_y": density_y,
-                "dens_c": density_colors,
-                "usa_bench": usa_bench 
-            }
-        }
-
-    json_dashboard = json.dumps(dashboard_data, default=lambda x: int(x) if isinstance(x, (np.int64, np.int32)) else x)
-    json_global = json.dumps(global_velocity_data, default=lambda x: int(x) if isinstance(x, (np.int64, np.int32)) else x)
-
-    html_content = f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Israel Medical Workforce Dashboard</title>
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-    <style>
-        body {{ font-family: 'Segoe UI', sans-serif; background-color: #f4f6f8; margin: 0; padding: 20px; }}
-        .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }}
-        h1 {{ text-align: center; color: #2c3e50; margin-bottom: 5px; }}
-        .subtitle {{ text-align: center; color: #7f8c8d; margin-bottom: 30px; font-size: 0.9em; }}
-        .section-title {{ font-size: 1.2em; font-weight: bold; color: #34495e; margin: 30px 0 15px 0; border-bottom: 2px solid #ecf0f1; padding-bottom: 10px; }}
-        .controls {{ text-align: center; margin-bottom: 30px; padding: 20px; background: #ecf0f1; border-radius: 8px; }}
-        select {{ padding: 10px 20px; font-size: 16px; border-radius: 5px; border: 1px solid #bdc3c7; min-width: 300px; }}
-        .kpi-row {{ display: flex; justify-content: space-around; margin-bottom: 30px; flex-wrap: wrap; gap: 10px; }}
-        .kpi-card {{ background: #fff; padding: 15px 25px; border-radius: 8px; border: 1px solid #eee; text-align: center; min-width: 200px; box-shadow: 0 2px 5px rgba(0,0,0,0.03); }}
-        .kpi-val {{ font-size: 24px; font-weight: bold; color: #2c3e50; display: block; }}
-        .kpi-label {{ font-size: 14px; color: #95a5a6; text-transform: uppercase; letter-spacing: 1px; }}
-        .charts-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; }}
-        .chart-box {{ background: white; padding: 10px; border-radius: 8px; border: 1px solid #eee; min-height: 350px; }}
-        .chart-full {{ grid-column: 1 / -1; }}
-        .footer {{ text-align: center; margin-top: 50px; color: #bdc3c7; font-size: 0.8em; }}
-    </style>
-</head>
-<body>
-
-<div class="container">
-    <h1>🇮🇱 Israel Medical Workforce Analysis</h1>
-    <div class="subtitle">Active Doctors (Under 45 years experience) | Data Source: MoH Live API</div>
-
-    <div class="section-title">🗺️ Global Market Velocity Map</div>
-    <div id="chart-velocity" class="chart-box" style="height: 500px;"></div>
-
-    <div class="section-title">🔬 Specialty Deep Dive</div>
-    <div class="controls">
-        <label for="specSelect"><strong>Select Specialty: </strong></label>
-        <select id="specSelect" onchange="updateDashboard()"></select>
-    </div>
-
-    <div class="kpi-row">
-        <div class="kpi-card">
-            <span class="kpi-val" id="kpi-total">-</span>
-            <span class="kpi-label">Active Doctors</span>
-        </div>
-        <div class="kpi-card">
-            <span class="kpi-val" id="kpi-ratio">-</span>
-            <span class="kpi-label">Junior/Vet Ratio</span>
-        </div>
-        <div class="kpi-card">
-            <span class="kpi-val" id="kpi-usa">-</span>
-            <span class="kpi-label">USA Benchmark Gap</span>
-        </div>
-    </div>
-
-    <div class="charts-grid">
-        <div id="chart-joins" class="chart-box chart-full"></div>
-        <div id="chart-trend" class="chart-box chart-full"></div>
-        <div class="chart-col">
-            <div id="chart-exp" class="chart-box" style="height: 350px;"></div>
-            <div id="chart-over45" class="chart-box" style="height: 150px; margin-top: 10px;"></div>
-        </div>
-        <div id="chart-dens" class="chart-box"></div>
-    </div>
-    
-    <div class="footer">Last Updated: {TIMESTAMP}</div>
-</div>
-
-<script>
-    const data = {json_dashboard};
-    const globalData = {json_global};
-    const specialties = Object.keys(data).sort();
-
-    const mapTrace = {{
-        x: globalData.map(d => d.x),
-        y: globalData.map(d => d.y),
-        text: globalData.map(d => d.name),
-        mode: 'markers',
-        marker: {{
-            size: globalData.map(d => Math.sqrt(d.x) * 1.5),
-            color: globalData.map(d => d.y),
-            colorscale: 'Viridis',
-            showscale: true,
-            opacity: 0.8
-        }}
-    }};
-    
-    Plotly.newPlot('chart-velocity', [mapTrace], {{
-        title: 'Size (Total Doctors) vs Growth Velocity (% Juniors)',
-        xaxis: {{ title: 'Total Doctors (Size)' }},
-        yaxis: {{ title: 'Velocity (Junior %) - Higher is Faster Growth' }},
-        hovermode: 'closest'
-    }}, {{responsive: true}});
-
-    const select = document.getElementById('specSelect');
-    specialties.forEach(spec => {{
-        const opt = document.createElement('option');
-        opt.value = spec;
-        opt.innerHTML = spec;
-        select.appendChild(opt);
-    }});
-
-    function updateDashboard() {{
-        const spec = select.value;
-        const d = data[spec];
-        
-        document.getElementById('kpi-total').innerText = d.total;
-        
-        const ratioElem = document.getElementById('kpi-ratio');
-        ratioElem.innerText = d.ratio_val;
-        ratioElem.style.color = d.ratio_color;
-        
-        const usaElem = document.getElementById('kpi-usa');
-        usaElem.innerText = d.usa_text;
-        usaElem.style.color = d.usa_color;
-
-        // CHART 1: ISRAEL + US DUAL AXIS SCALED
-        var traceIsrael = {{
-            x: d.charts.years_x,
-            y: d.charts.years_y,
-            name: 'Israel New Licenses',
-            type: 'bar',
-            marker: {{ color: '#3498db' }}
-        }};
-        
-        var dataJoins = [traceIsrael];
-        var layoutJoins = {{
-            title: 'New Specialty Licenses (Visual Comparison)',
-            margin: {{ t: 40, b: 40, l: 40, r: 40 }},
-            xaxis: {{ title: 'Year' }},
-            yaxis: {{ title: 'Israel Count', range: d.charts.y1_range }},
-            legend: {{ x: 0, y: 1.1, orientation: 'h' }}
-        }};
-
-        if (d.charts.us_x && d.charts.us_x.length > 0) {{
-            var traceUS = {{
-                x: d.charts.us_x,
-                y: d.charts.us_y,
-                name: 'US New Licenses (Scaled Axis)',
-                type: 'scatter',
-                mode: 'lines+markers',
-                yaxis: 'y2',
-                line: {{ color: '#e74c3c', width: 3, dash: 'dot' }}
-            }};
-            dataJoins.push(traceUS);
-            
-            layoutJoins.yaxis2 = {{
-                title: 'US Count',
-                overlaying: 'y',
-                side: 'right',
-                range: d.charts.y2_range,
-                showgrid: false
-            }};
-        }}
-
-        Plotly.newPlot('chart-joins', dataJoins, layoutJoins, {{responsive: true}});
-
-        const traceHist = {{
-            x: d.charts.hist_x,
-            y: d.charts.hist_y,
-            name: 'Historical Data',
-            type: 'scatter',
-            mode: 'lines',
-            line: {{ width: 3, color: '#2c3e50' }}
-        }};
-        
-        const traceFut = {{
-            x: [d.charts.hist_x[d.charts.hist_x.length-1], ...d.charts.fut_x],
-            y: [d.charts.hist_y[d.charts.hist_y.length-1], ...d.charts.fut_y],
-            name: 'Projected Forecast',
-            type: 'scatter',
-            mode: 'lines',
-            line: {{ width: 3, color: '#e74c3c', dash: 'dot' }}
-        }};
-
-        Plotly.newPlot('chart-trend', [traceHist, traceFut], {{
-            title: 'Net Pipeline (Inflow vs 45y Retirement)',
-            margin: {{ t: 40, b: 40, l: 40, r: 20 }},
-            shapes: [{{ type: 'line', x0: 1980, x1: 2035, y0: 0, y1: 0, line: {{ color: 'gray', width: 1, dash: 'dot' }} }}],
-            xaxis: {{ title: 'Year', range: [1980, 2035] }},
-            yaxis: {{ title: 'Net Balance (In - Out)' }}
-        }}, {{responsive: true}});
-
-        // PIE CHART
-        var pieData = [{{
-            values: d.charts.pie_values,
-            labels: d.charts.pie_labels,
-            type: 'pie',
-            marker: {{ colors: ['#2ecc71', '#3498db', '#f1c40f', '#e74c3c'] }},
-            textinfo: 'label+percent',
-            hoverinfo: 'label+value'
-        }}];
-        
-        Plotly.newPlot('chart-exp', pieData, {{
-            title: 'Experience (Specialty Date)',
-            margin: {{ t: 40, b: 40, l: 40, r: 40 }}
-        }}, {{responsive: true}});
-
-        // OVER 45 CHART (Horizontal)
-        Plotly.newPlot('chart-over45', [{{
-            x: [d.count_over_45],
-            y: ['Doctors'],
-            type: 'bar',
-            orientation: 'h',
-            marker: {{ color: '#95a5a6' }},
-            width: 0.3,
-            text: [d.count_over_45],
-            textposition: 'auto'
-        }}], {{
-            title: 'Doctors Over 67 Years old',
-            margin: {{ t: 30, b: 30, l: 60, r: 20 }},
-            xaxis: {{ visible: false }}
-        }}, {{responsive: true}});
-
-        const densityTrace = {{
-            x: d.charts.dens_x,
-            y: d.charts.dens_y,
-            type: 'bar',
-            orientation: 'h',
-            marker: {{ color: d.charts.dens_c }},
-            text: d.charts.dens_x.map(v => v.toFixed(3)),
-            textposition: 'auto'
-        }};
-        const densLayout = {{
-            title: 'Density (per 1,000)',
-            margin: {{ t: 40, b: 40, l: 80, r: 20 }},
-            xaxis: {{ zeroline: false }}
-        }};
-        if(d.charts.usa_bench) {{
-            densLayout.shapes = [{{ type: 'line', x0: d.charts.usa_bench, x1: d.charts.usa_bench, y0: -0.5, y1: 1.5, line: {{ color: 'red', width: 2, dash: 'dot' }} }}];
-        }}
-        Plotly.newPlot('chart-dens', [densityTrace], densLayout, {{responsive: true}});
-    }}
-    
-    if (specialties.length > 0) updateDashboard();
-</script>
-
-</body>
-</html>
-    """
-
-    with open("index.html", "w", encoding="utf-8") as f:
-        f.write(html_content)
-    
-    print("✅ Success! Dashboard updated with SCALED DUAL AXIS.")
-
-if __name__ == "__main__":
-    generate_static_site()
+        density_
